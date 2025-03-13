@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clipboard</title>
+
+    <link href="https://lf3-cdn-tos.bytecdntp.com/cdn/expire-1-M/bootstrap/4.6.0/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f9;
+            margin: 0;
+            padding: 0;
+        }
+
+        #toast {
+            visibility: hidden;
+            min-width: 250px;
+            background-color: #333;
+            color: #fff;
+            text-align: center;
+            border-radius: 2px;
+            padding: 16px;
+            position: fixed;
+            z-index: 1;
+            left: 50%;
+            bottom: 30px;
+            transform: translateX(-50%);
+        }
+
+        #toast.show {
+            visibility: visible;
+            -webkit-animation: fadein 0.5s, fadeout 0.5s 2.5s;
+            animation: fadein 0.5s, fadeout 0.5s 2.5s;
+        }
+
+        #dropZone.dragover {
+            border-color: #333;
+        }
+
+        .card-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 20px;
+            padding: 20px;
+        }
+
+        .card img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+        }
+
+        .card button {
+            margin: 5px;
+        }
+
+        h1,
+        h2 {
+            text-align: center;
+        }
+
+        pre {
+            white-space: pre-wrap; /* 保证文字换行 */
+            word-wrap: break-word; /* 保证长单词换行 */
+            max-height: 300px; /* 设置最大高度 */
+            overflow-y: auto; /* 超出部分滚动显示 */
+            padding: 10px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            position: relative;
+        }
+
+        .file-buttons {
+            display: flex;
+            justify-content: flex-start;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .file-container {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container mt-5">
+        <div class="row">
+            <div class="col-md-4">
+                <!-- 输入文字或上传文件的表单 -->
+                <form id="uploadForm" enctype="multipart/form-data" class="card p-3 mb-3">
+                    <div class="form-group">
+                        <label for="textInput">输入文字:</label>
+                        <textarea id="textInput" name="text" class="form-control"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="fileInput">选择文件:</label>
+                        <input type="file" id="fileInput" name="file" class="form-control-file">
+                    </div>
+                    <button type="submit" class="btn btn-primary">上传</button>
+                </form>
+                <div id="uploadResult" class="alert alert-info" role="alert"></div>
+                <div id="toast" class="toast" role="alert" aria-live="assertive" aria-atomic="true"></div>
+                <div id="dropZone" class="card p-3 mb-3 text-center">拖拽文件到此处上传</div>
+                <div id="progressBar" class="progress mb-3">
+                    <div class="progress-bar" role="progressbar"></div>
+                </div>
+                <div id="pastedImageContainer" class="card p-3 text-center">
+                    <h2>图片展示区</h2>
+                    <img id="pastedImage" alt="Pasted Image" class="img-fluid" style="display: none;">
+                    <button id="pasteImageButton" class="btn btn-secondary mt-2">触发粘贴</button>
+                    <button id="uploadPastedImage" class="btn btn-secondary mt-2">上传粘贴的图片</button>
+                </div>
+            </div>
+            <div class="col-md-8">
+                <h1 class="text-center">所有文件信息</h1>
+                <div id="allFiles" class="card-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+    <script>
+        let pastedImageFile = null;
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // 处理上传表单提交事件
+        const uploadForm = document.getElementById('uploadForm');
+        const uploadResult = document.getElementById('uploadResult');
+        const progressBar = document.getElementById('progressBar').firstElementChild;
+        uploadForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const formData = new FormData(uploadForm);
+
+            // Log formData content for debugging
+            for (let pair of formData.entries()) {
+                console.log(pair[0] + ': ' + pair[1]);
+            }
+
+            await uploadFiles(formData);
+        });
+
+        // 处理拖拽上传
+        const dropZone = document.getElementById('dropZone');
+        dropZone.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', async (event) => {
+            event.preventDefault();
+            dropZone.classList.remove('dragover');
+            const files = event.dataTransfer.files;
+            const formData = new FormData();
+            for (const file of files) {
+                formData.append('file', file);
+            }
+            await uploadFiles(formData);
+        });
+
+        // 处理粘贴事件，移除 text/html 处理逻辑
+        document.addEventListener('paste', (event) => {
+            const items = event.clipboardData.items;
+            for (const item of items) {
+                if (item.kind === 'file' && item.type.startsWith('image/')) {
+                    pastedImageFile = item.getAsFile();
+                    const img = document.getElementById('pastedImage');
+                    img.style.display = 'block'; // 显示图片
+                    img.src = URL.createObjectURL(pastedImageFile);
+                    img.onload = () => {
+                        setTimeout(() => URL.revokeObjectURL(img.src), 1000); // 延迟释放 URL
+                    };
+                }
+            }
+        });
+
+        // 上传粘贴的图片
+        const uploadPastedImageButton = document.getElementById('uploadPastedImage');
+        uploadPastedImageButton.addEventListener('click', async () => {
+            if (pastedImageFile) {
+                const formData = new FormData();
+                const fileExtension = pastedImageFile.type.split('/')[1]; // 获取文件扩展名
+                const fileName = `pasted_image.${fileExtension}`;
+                const fileWithExtension = new File([pastedImageFile], fileName, { type: pastedImageFile.type });
+                formData.append('file', fileWithExtension);
+                await uploadFiles(formData);
+            } else {
+                showToast('没有粘贴的图片');
+            }
+        });
+
+        // 添加粘贴按钮功能，触发粘贴逻辑
+        const pasteImageButton = document.getElementById('pasteImageButton');
+        pasteImageButton.addEventListener('click', async () => {
+            try {
+                const items = await navigator.clipboard.read();
+                for (const item of items) {
+                    if (item.types.includes('image/png') || item.types.includes('image/jpeg') || item.types.includes('image/webp')) {
+                        const blob = await item.getType(item.types[0]);
+                        pastedImageFile = new File([blob], `pasted_image.${blob.type.split('/')[1]}`, { type: blob.type });
+                        const img = document.getElementById('pastedImage');
+                        img.style.display = 'block'; // 显示图片
+                        img.src = URL.createObjectURL(pastedImageFile);
+                        img.onload = () => {
+                            setTimeout(() => URL.revokeObjectURL(img.src), 1000); // 延迟释放 URL
+                        };
+                    }
+                }
+            } catch (err) {
+                showToast('粘贴图片失败');
+                console.error('粘贴图片失败:', err);
+            }
+        });
+
+        async function uploadFiles(formData) {
+            try {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/clipboard/upload', true);
+                xhr.upload.onprogress = (event) => {
+                    if (event.lengthComputable) {
+                        const percentComplete = (event.loaded / event.total) * 100;
+                        progressBar.style.width = percentComplete + '%';
+                        progressBar.textContent = Math.round(percentComplete) + '%';
+                    }
+                };
+                xhr.onload = () => {
+                    if (xhr.status === 200) {
+                        uploadResult.textContent = xhr.responseText;
+                        showToast('上传成功');
+                        // 上传成功后重新查询文件列表
+                        displayFiles();
+                    } else {
+                        uploadResult.textContent = `上传出错: ${xhr.statusText}`;
+                        showToast('上传失败');
+                    }
+                    progressBar.style.width = '0%';
+                    progressBar.textContent = '';
+                };
+                xhr.onerror = () => {
+                    uploadResult.textContent = `上传出错: ${xhr.statusText}`;
+                    showToast('上传失败');
+                    progressBar.style.width = '0%';
+                    progressBar.textContent = '';
+                };
+                xhr.send(formData);
+            } catch (error) {
+                uploadResult.textContent = `上传出错: ${error.message}`;
+                showToast('上传失败');
+                progressBar.style.width = '0%';
+                progressBar.textContent = '';
+            }
+        }
+
+        // 显示所有文件信息
+        async function displayFiles() {
+            try {
+                const response = await fetch('/api/clipboard/queryAllFiles');
+                const files = await response.json();
+                const allFilesDiv = document.getElementById('allFiles');
+                allFilesDiv.innerHTML = ''; // 清空原有内容
+
+                for (const file of files) {
+                    if (file.type === 'text') {
+                        try {
+                            const textResponse = await fetch(`/api/clipboard/files/${file.fileName}`);
+                            const textContent = await textResponse.text();
+                            const pre = document.createElement('pre');
+                            pre.textContent = textContent;
+
+                            const containerDiv = document.createElement('div');
+                            containerDiv.classList.add('file-container');
+
+                            const buttonsDiv = document.createElement('div');
+                            buttonsDiv.classList.add('file-buttons');
+
+                            const copyButton = document.createElement('button');
+                            copyButton.textContent = '复制';
+                            copyButton.classList.add('btn', 'btn-secondary');
+                            copyButton.addEventListener('click', async () => {
+                                try {
+                                    await navigator.clipboard.writeText(textContent);
+                                    showToast('文字已复制到剪贴板');
+                                } catch (error) {
+                                    showToast('复制失败');
+                                }
+                            });
+
+                            const deleteButton = document.createElement('button');
+                            deleteButton.textContent = '删除';
+                            deleteButton.classList.add('btn', 'btn-danger');
+                            deleteButton.addEventListener('click', async () => {
+                                try {
+                                    const deleteResponse = await fetch(`/api/clipboard/deleteFile/${file.fileName}`, {
+                                        method: 'DELETE'
+                                    });
+                                    const deleteResult = await deleteResponse.text();
+                                    showToast(deleteResult);
+                                    // 删除成功后重新查询文件列表
+                                    displayFiles();
+                                } catch (error) {
+                                    showToast('删除出错');
+                                }
+                            });
+
+                            buttonsDiv.appendChild(copyButton);
+                            buttonsDiv.appendChild(deleteButton);
+                            containerDiv.appendChild(buttonsDiv);
+                            containerDiv.appendChild(pre);
+                            allFilesDiv.appendChild(containerDiv);
+                        } catch (error) {
+                            console.error(`获取文字文件 ${file.fileName} 出错:`, error);
+                        }
+                    } else if (file.type === 'image') {
+                        const img = document.createElement('img');
+                        img.src = `/api/clipboard/files/${file.fileName}`;
+                        const p = document.createElement('p');
+                        p.textContent = `文件名: ${file.fileName}`;
+                        p.appendChild(img);
+
+                        const buttonsDiv = document.createElement('div');
+                        buttonsDiv.classList.add('file-buttons');
+
+                        const copyButton = document.createElement('button');
+                        copyButton.textContent = '复制';
+                        copyButton.classList.add('btn', 'btn-secondary');
+                        copyButton.addEventListener('click', async () => {
+                            try {
+                                const response = await fetch(`/api/clipboard/files/${file.fileName}`);
+                                const blob = await response.blob();
+                                await navigator.clipboard.write([
+                                    new ClipboardItem({
+                                        [blob.type]: blob
+                                    })
+                                ]);
+                                showToast('图片已复制到剪贴板');
+                            } catch (error) {
+                                showToast('复制失败');
+                            }
+                        });
+
+                        const deleteButton = document.createElement('button');
+                        deleteButton.textContent = '删除';
+                        deleteButton.classList.add('btn', 'btn-danger');
+                        deleteButton.addEventListener('click', async () => {
+                            try {
+                                const deleteResponse = await fetch(`/api/clipboard/deleteFile/${file.fileName}`, {
+                                    method: 'DELETE'
+                                });
+                                const deleteResult = await deleteResponse.text();
+                                showToast(deleteResult);
+                                // 删除成功后重新查询文件列表
+                                displayFiles();
+                            } catch (error) {
+                                showToast('删除出错');
+                            }
+                        });
+
+                        buttonsDiv.appendChild(copyButton);
+                        buttonsDiv.appendChild(deleteButton);
+                        p.appendChild(buttonsDiv);
+                        allFilesDiv.appendChild(p);
+                    } else if (file.type === 'file') {
+                        const p = document.createElement('p');
+                        p.textContent = `文件名: ${file.fileName}`;
+
+                        const buttonsDiv = document.createElement('div');
+                        buttonsDiv.classList.add('file-buttons');
+
+                        const downloadButton = document.createElement('button');
+                        downloadButton.textContent = '下载';
+                        downloadButton.classList.add('btn', 'btn-primary');
+                        downloadButton.addEventListener('click', () => {
+                            window.location.href = `/api/clipboard/files/${file.fileName}`;
+                        });
+
+                        const deleteButton = document.createElement('button');
+                        deleteButton.textContent = '删除';
+                        deleteButton.classList.add('btn', 'btn-danger');
+                        deleteButton.addEventListener('click', async () => {
+                            try {
+                                const deleteResponse = await fetch(`/api/clipboard/deleteFile/${file.fileName}`, {
+                                    method: 'DELETE'
+                                });
+                                const deleteResult = await deleteResponse.text();
+                                showToast(deleteResult);
+                                // 删除成功后重新查询文件列表
+                                displayFiles();
+                            } catch (error) {
+                                showToast('删除出错');
+                            }
+                        });
+
+                        buttonsDiv.appendChild(downloadButton);
+                        buttonsDiv.appendChild(deleteButton);
+                        p.appendChild(buttonsDiv);
+                        allFilesDiv.appendChild(p);
+                    }
+                }
+            } catch (error) {
+                console.error('查询文件列表出错:', error);
+            }
+        }
+
+        // 页面加载时显示所有文件信息
+        window.onload = displayFiles;
+    </script>
+</body>
+
+</html>

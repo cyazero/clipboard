@@ -14,11 +14,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -34,29 +31,68 @@ public class ClipboardController {
     // 保存文件的目录
     private static final String SAVE_DIR = "temp_files";
     // 保存文件的创建时间
-    private static final Map<String, Long> fileCreationTimes = new HashMap<>();
+    private static final Map<String, Long> fileCreationTimes = new ConcurrentHashMap<>();
+    // 新增白名单集合（存储文件绝对路径）
+    private static final Set<String> whitelistedFiles = ConcurrentHashMap.newKeySet();
     // 定时任务执行器
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     // 最大文件总大小 1GB
     private static final long MAX_TOTAL_SIZE = (long) 1024 * 1024 * 1024;
     static {
-        // 启动定时任务，每隔 1 小时检查一次文件是否过期
         scheduler.scheduleAtFixedRate(() -> {
-            long currentTime = System.currentTimeMillis();
-            for (Map.Entry<String, Long> entry : fileCreationTimes.entrySet()) {
-                String filePath = entry.getKey();
-                long creationTime = entry.getValue();
-                if (currentTime - creationTime > 3 * 60 * 60 * 1000) {
-                    // 文件已超过 3 小时，删除文件
-                    File file = new File(filePath);
-                    if (file.exists()) {
-                        file.delete();
-                        fileCreationTimes.remove(filePath);
+            try {
+                long currentTime = System.currentTimeMillis();
+                List<String> filePaths = new ArrayList<>(fileCreationTimes.keySet());
+
+                for (String filePath : filePaths) {
+                    // 检查白名单
+                    if (whitelistedFiles.contains(filePath)) {
+                        continue;
+                    }
+
+                    Long creationTime = fileCreationTimes.get(filePath);
+                    if (creationTime == null) continue;
+
+                    if (currentTime - creationTime > 3 * 60 * 60 * 1000) {
+                        File file = new File(filePath);
+                        if (file.exists()) {
+                            if (file.delete()) {
+                                fileCreationTimes.remove(filePath);
+                                whitelistedFiles.remove(filePath); // 清理无效白名单
+                            }
+                        } else {
+                            fileCreationTimes.remove(filePath);
+                            whitelistedFiles.remove(filePath);
+                        }
                     }
                 }
+            } catch (Exception e) {
+                e.printStackTrace();
             }
         }, 1, 1, TimeUnit.HOURS);
     }
+
+    //添加/移除白名单
+    @PutMapping("/whitelist/{fileName}")
+    public ResponseEntity<String> manageWhitelist(
+            @PathVariable String fileName,
+            @RequestParam(defaultValue = "true") boolean addToWhitelist) {
+        File targetFile = new File(SAVE_DIR, fileName);
+
+        if (!targetFile.exists()) {
+            return ResponseEntity.status(404).body("文件不存在");
+        }
+
+        String absolutePath = targetFile.getAbsolutePath();
+        if (addToWhitelist) {
+            whitelistedFiles.add(absolutePath);
+        } else {
+            whitelistedFiles.remove(absolutePath);
+        }
+
+        return ResponseEntity.ok("操作成功");
+    }
+
     @PostMapping("/upload")
     public String handleUpload(@RequestParam(value = "text", required = false) String text,
                                @RequestPart(value = "file", required = false) MultipartFile file) {
@@ -138,10 +174,12 @@ public class ClipboardController {
             if (files != null) {
                 for (File file : files) {
                     Map<String, Object> fileInfo = new HashMap<>();
+                    String absolutePath = file.getAbsolutePath();
                     fileInfo.put("fileName", file.getName());
                     fileInfo.put("creationTime", new Date(file.lastModified()));
                     String contentType = getContentType(file.toPath());
                     fileInfo.put("type", getFileType(contentType));
+                    fileInfo.put("isWhitelisted", whitelistedFiles.contains(absolutePath));
                     fileList.add(fileInfo);
                 }
             }
@@ -168,14 +206,16 @@ public class ClipboardController {
         File file = new File(SAVE_DIR, fileName);
         if (file.exists() && file.isFile()) {
             if (file.delete()) {
-                fileCreationTimes.remove(file.getAbsolutePath());
+                String absolutePath = file.getAbsolutePath();
+                fileCreationTimes.remove(absolutePath);
+                whitelistedFiles.remove(absolutePath);
                 return "File deleted successfully";
-            } else {
-                return "Failed to delete file";
             }
+            return "Failed to delete file";
         }
         return "File not found";
     }
+
     private String getContentType(Path filePath) {
         try {
             return Files.probeContentType(filePath);

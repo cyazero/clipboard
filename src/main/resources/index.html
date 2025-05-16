@@ -1,427 +1,485 @@
 <!DOCTYPE html>
-<html lang="en">
-
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Clipboard</title>
-
-    <link href="https://lf3-cdn-tos.bytecdntp.com/cdn/expire-1-M/bootstrap/4.6.0/css/bootstrap.min.css" rel="stylesheet">
+    <title>云剪贴板</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23fff'/%3E%3Cpath d='M25 25h50v10H25z' fill='%23007bff'/%3E%3Cpath d='M25 40h50v45H25zm0 15h50M25 55h50M25 70h50' stroke='%23007bff' stroke-width='4' fill='none'/%3E%3C/svg%3E">
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
     <style>
+        :root {
+            --success: #28a745;
+            --danger: #dc3545;
+            --primary: #007bff;
+        }
+
         body {
-            font-family: Arial, sans-serif;
-            background-color: #f4f4f9;
-            margin: 0;
-            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #f8f9fa;
+            min-height: 100vh;
+        }
+
+        .drag-over {
+            border: 2px dashed var(--primary) !important;
+            background-color: rgba(0, 123, 255, 0.05);
+        }
+
+        .file-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+            min-height: 300px;
+        }
+
+        .file-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+        }
+
+        .content-preview {
+            position: relative;
+            max-height: none; /* 取消最大高度限制 */
+            overflow: visible; /* 允许内容自然扩展 */
+        }
+
+        .content-preview.has-overflow::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 60px;
+            background: linear-gradient(to bottom, transparent 0%, white 90%);
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .content-preview::after {
+            z-index: 1; /* 低于按钮层级 */
+        }
+
+        .content-full {
+            max-height: none;
+            overflow: auto;
+        }
+
+        .load-more {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(to bottom, transparent, white 70%);
+            padding: 2rem 0 1rem;
+            text-align: center;
+        }
+
+        .whitelist-icon {
+            width: 18px;
+            height: 18px;
+            margin-right: 6px;
         }
 
         #toast {
-            visibility: hidden;
-            min-width: 250px;
-            background-color: #333;
-            color: #fff;
-            text-align: center;
-            border-radius: 2px;
-            padding: 16px;
-            position: fixed;
-            z-index: 1;
-            left: 50%;
-            bottom: 30px;
-            transform: translateX(-50%);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
-        #toast.show {
-            visibility: visible;
-            -webkit-animation: fadein 0.5s, fadeout 0.5s 2.5s;
-            animation: fadein 0.5s, fadeout 0.5s 2.5s;
+        .pre-line {
+            transition: max-height 0.3s ease;
         }
 
-        #dropZone.dragover {
-            border-color: #333;
+        /* 展开时的样式 */
+        .pre-line.expanded {
+            max-height: none !important;
+            overflow: visible;
         }
 
-        .card-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 20px;
-            padding: 20px;
-        }
-
-        .card img {
-            max-width: 100%;
-            height: auto;
-            border-radius: 8px;
-        }
-
-        .card button {
-            margin: 5px;
-        }
-
-        h1,
-        h2 {
-            text-align: center;
-        }
-
-        pre {
-            white-space: pre-wrap; /* 保证文字换行 */
-            word-wrap: break-word; /* 保证长单词换行 */
-            max-height: 300px; /* 设置最大高度 */
-            overflow-y: auto; /* 超出部分滚动显示 */
-            padding: 10px;
-            background-color: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 5px;
+        .pre-line-container {
             position: relative;
+            padding-bottom: 40px; /* 给按钮留出空间 */
         }
 
-        .file-buttons {
-            display: flex;
-            justify-content: flex-start;
-            gap: 10px;
-            margin-bottom: 10px;
-        }
-
-        .file-container {
-            margin-bottom: 20px;
+        .show-full-btn {
+            position: relative; /* 改为相对定位 */
+            z-index: 10; /* 确保按钮可见 */
+            margin-top: 8px;
         }
     </style>
 </head>
-
 <body>
-    <div class="container mt-5">
-        <div class="row">
-            <div class="col-md-4">
-                <!-- 输入文字或上传文件的表单 -->
-                <form id="uploadForm" enctype="multipart/form-data" class="card p-3 mb-3">
-                    <div class="form-group">
-                        <label for="textInput">输入文字:</label>
-                        <textarea id="textInput" name="text" class="form-control"></textarea>
+<div class="container py-4">
+    <div class="row g-4">
+        <div class="col-lg-4">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <h5 class="card-title mb-3">📤 上传内容</h5>
+
+                    <form id="uploadForm" class="mb-4">
+                        <div class="mb-3">
+                            <label class="form-label">文字内容</label>
+                            <textarea
+                                    id="textInput"
+                                    name="text"
+                                    class="form-control"
+                                    rows="3"
+                                    placeholder="输入要保存的文字..."
+                            ></textarea>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">文件上传</label>
+                            <input
+                                    type="file"
+                                    id="fileInput"
+                                    name="file"
+                                    class="form-control"
+                            >
+                        </div>
+
+                        <button type="submit" class="btn btn-primary w-100">
+                            <span class="upload-text">开始上传</span>
+                            <span class="spinner-border spinner-border-sm d-none" role="status"></span>
+                        </button>
+                    </form>
+
+                    <div
+                            id="dropZone"
+                            class="card border-dashed bg-light mb-4"
+                            style="height: 120px; cursor: pointer;"
+                    >
+                        <div class="card-body d-flex flex-column justify-content-center text-center text-muted">
+                            <i class="bi bi-upload fs-3 mb-2"></i>
+                            <small>拖放文件到此处上传</small>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="fileInput">选择文件:</label>
-                        <input type="file" id="fileInput" name="file" class="form-control-file">
+
+                    <div class="card">
+                        <div class="card-body">
+                            <h6 class="card-subtitle mb-3">🖼️ 图片粘贴区</h6>
+                            <div class="ratio ratio-16x9 bg-light mb-3">
+                                <img
+                                        id="pastedImage"
+                                        class="img-fluid object-fit-contain"
+                                        style="display: none;"
+                                >
+                            </div>
+                            <div class="d-grid gap-2">
+                                <button
+                                        id="pasteBtn"
+                                        class="btn btn-outline-secondary"
+                                >
+                                    粘贴图片
+                                </button>
+                                <button
+                                        id="uploadPastedBtn"
+                                        class="btn btn-success"
+                                        disabled
+                                >
+                                    上传图片
+                                </button>
+                            </div>
+                        </div>
                     </div>
-                    <button type="submit" class="btn btn-primary">上传</button>
-                </form>
-                <div id="uploadResult" class="alert alert-info" role="alert"></div>
-                <div id="toast" class="toast" role="alert" aria-live="assertive" aria-atomic="true"></div>
-                <div id="dropZone" class="card p-3 mb-3 text-center">拖拽文件到此处上传</div>
-                <div id="progressBar" class="progress mb-3">
-                    <div class="progress-bar" role="progressbar"></div>
-                </div>
-                <div id="pastedImageContainer" class="card p-3 text-center">
-                    <h2>图片展示区</h2>
-                    <img id="pastedImage" alt="Pasted Image" class="img-fluid" style="display: none;">
-                    <button id="pasteImageButton" class="btn btn-secondary mt-2">触发粘贴</button>
-                    <button id="uploadPastedImage" class="btn btn-secondary mt-2">上传粘贴的图片</button>
                 </div>
             </div>
-            <div class="col-md-8">
-                <h1 class="text-center">所有文件信息</h1>
-                <div id="allFiles" class="card-container"></div>
+        </div>
+
+        <div class="col-lg-8">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <h5 class="card-title mb-3">📂 所有文件</h5>
+                    <div id="fileList" class="row g-3"></div>
+                </div>
             </div>
         </div>
     </div>
+</div>
 
-    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
-    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
-    <script>
-        let pastedImageFile = null;
+<div id="toast" class="toast align-items-center position-fixed bottom-0 start-50 translate-x-n50 mb-4 border-0"
+     role="alert" aria-live="assertive" aria-atomic="true">
+    <div class="d-flex bg-dark text-white rounded p-3">
+        <div class="toast-body"></div>
+        <button type="button" class="btn-close btn-close-white me-3 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+</div>
 
-        function showToast(message) {
-            const toast = document.getElementById('toast');
-            toast.textContent = message;
-            toast.classList.add('show');
-            setTimeout(() => {
-                toast.classList.remove('show');
-            }, 3000);
+<script>
+    const MAX_PREVIEW_LENGTH = 1000;
+    let pastedImageFile = null;
+
+    class Toast {
+        static show(message, type = 'info') {
+            const toastEl = document.getElementById('toast');
+            const toastBody = toastEl.querySelector('.toast-body');
+            toastEl.className = `toast show bg-${type} text-white`;
+            toastBody.textContent = message;
+            setTimeout(() => toastEl.classList.remove('show'), 3000);
         }
+    }
 
-        // 处理上传表单提交事件
-        const uploadForm = document.getElementById('uploadForm');
-        const uploadResult = document.getElementById('uploadResult');
-        const progressBar = document.getElementById('progressBar').firstElementChild;
-        uploadForm.addEventListener('submit', async (event) => {
-            event.preventDefault();
-            const formData = new FormData(uploadForm);
+    async function uploadFile(formData) {
+        const btn = document.querySelector('#uploadForm button');
+        btn.disabled = true;
+        btn.querySelector('.upload-text').classList.add('d-none');
+        btn.querySelector('.spinner-border').classList.remove('d-none');
 
-            // Log formData content for debugging
-            for (let pair of formData.entries()) {
-                console.log(pair[0] + ': ' + pair[1]);
+        try {
+            const response = await fetch('/api/clipboard/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) throw new Error('上传失败');
+            Toast.show('上传成功', 'success');
+            await loadFiles();
+        } catch (error) {
+            Toast.show(error.message, 'danger');
+        } finally {
+            btn.disabled = false;
+            btn.querySelector('.upload-text').classList.remove('d-none');
+            btn.querySelector('.spinner-border').classList.add('d-none');
+        }
+    }
+
+    async function loadFiles() {
+        try {
+            const response = await fetch('/api/clipboard/queryAllFiles');
+            const files = await response.json();
+            renderFiles(files);
+            loadTextContents(files);
+        } catch (error) {
+            Toast.show('加载文件失败', 'danger');
+        }
+    }
+
+    function renderFiles(files) {
+        const container = document.getElementById('fileList');
+        container.innerHTML = files.map(file => `
+        <div class="col-12">
+            <div class="card file-card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center">
+                        <img src="${file.isWhitelisted ?
+            'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSIjMjhhNzQ1Ij48cGF0aCBkPSJNMTkuMjkzIDUuMjkzTDkgMTUuNTg2IDQuNzA3IDExLjI5MyAzLjI5MyAxMi43MDcgOSAxOC40MTQgMjAuNzA3IDYuNzA3eiIvPjwvc3ZnPg==' :
+            'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSIjNmM3NTgwIj48cGF0aCBkPSJNMTkgNWgydjE0aC0ydjE0SDU2djJIMThWN0g1VjVoMTR6TTMxIDE5VjVoMTR2MThIMzF6Ii8+PC9zdmc+'}"
+                             class="whitelist-icon">
+                        <span class="ms-2">${file.fileName}</span>
+                    </div>
+                    <small class="text-muted">
+                        ${new Date(file.creationTime).toLocaleDateString()}
+                    </small>
+                </div>
+                <div class="card-body">
+                    ${file.type === 'text' ? `
+                        <div class="content-preview">
+                            <!-- 将pre改为div避免嵌套限制 -->
+                            <div class="pre-line-container" id="pre-${encodeURIComponent(file.fileName)}">
+                                <div class="d-flex align-items-center text-muted">
+                                    <div class="spinner-border spinner-border-sm me-2"></div>
+                                    正在加载内容...
+                                </div>
+                            </div>
+                        </div>
+                    ` : file.type === 'image' ? `
+                        <img src="/api/clipboard/files/${encodeURIComponent(file.fileName)}"
+                             class="img-fluid rounded"
+                             loading="lazy">
+                    ` : `
+                        <a href="/api/clipboard/files/${encodeURIComponent(file.fileName)}"
+                           class="btn btn-outline-primary w-100"
+                           download="${file.fileName}">
+                            下载文件
+                        </a>
+                    `}
+                </div>
+                <div class="card-footer d-flex justify-content-between">
+                    <button class="btn ${file.isWhitelisted ? 'btn-danger' : 'btn-success'}"
+                            onclick="toggleWhitelist('${encodeURIComponent(file.fileName)}', ${!file.isWhitelisted})">
+                        ${file.isWhitelisted ? '移出白名单' : '加入保护'}
+                    </button>
+                    <button class="btn btn-outline-danger"
+                            onclick="deleteFile('${encodeURIComponent(file.fileName)}')">
+                        删除
+                    </button>
+                </div>
+            </div>
+        </div>
+        `).join('');
+    }
+
+    function getSafeElement(encodedFileName) {
+        try {
+            return document.querySelector(`#pre-${CSS.escape(encodedFileName)}`);
+        } catch {
+            return null;
+        }
+    }
+
+    async function loadTextContents(files) {
+        const textFiles = files.filter(f => f.type === 'text');
+
+        // 使用串行加载确保稳定性
+        for (const file of textFiles) {
+            const encodedFileName = encodeURIComponent(file.fileName);
+            const containerId = `pre-${encodedFileName}`;
+            const container = document.getElementById(containerId);
+
+            if (!container) {
+                console.error(`找不到容器: ${containerId}`);
+                continue;
             }
 
-            await uploadFiles(formData);
+            try {
+                // 显示加载状态
+                container.innerHTML = `
+                <div class="d-flex align-items-center text-muted">
+                    <div class="spinner-border spinner-border-sm me-2"></div>
+                    正在加载内容...
+                </div>
+            `;
+
+                // 发起内容请求
+                const response = await fetch(`/api/clipboard/files/${encodedFileName}`);
+                if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
+                const content = await response.text();
+
+                // 更新内容显示（同步操作）
+                if (content.length > MAX_PREVIEW_LENGTH) {
+                    container.innerHTML = `
+                    <div class="pre-line" style="max-height:200px;overflow:hidden;">
+                        ${escapeHtml(content)}
+                    </div>
+                    <button class="btn btn-link p-0 mt-2 show-full-btn"
+                            onclick="toggleExpand('${encodedFileName}')">
+                        显示完整内容
+                    </button>
+                    <div class="text-muted">...（内容已截断）</div>
+                `;
+                } else {
+                    container.innerHTML = `
+                    <div class="pre-line">
+                        ${escapeHtml(content)}
+                    </div>
+                `;
+                }
+            } catch (error) {
+                console.error('内容加载失败:', error);
+                container.innerHTML = `
+                <div class="text-danger">
+                    加载失败: ${error.message}
+                    <button class="btn btn-link p-0"
+                            onclick="window.loadTextContents([${JSON.stringify(file)}])">
+                        重试
+                    </button>
+                </div>
+            `;
+            }
+        }
+    }
+
+    function toggleExpand(filename) {
+        const encoded = encodeURIComponent(filename);
+        const container = document.querySelector(`#pre-${CSS.escape(encoded)} .pre-line`);
+        if (container) {
+            container.style.maxHeight = container.style.maxHeight === '200px' ? 'none' : '200px';
+        }
+    }
+
+    function escapeHtml(unsafe) {
+        return unsafe.replace(/[&<"'>]/g, m => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[m]));
+    }
+
+    async function loadFullContent(filename, button) {
+        try {
+            const response = await fetch(`/api/clipboard/files/${filename}`);
+            const content = await response.text();
+            const pre = button.closest('pre');
+            pre.innerHTML = `<div class="pre-line content-full">${escapeHtml(content)}</div>`;
+        } catch {
+            Toast.show('加载完整内容失败', 'danger');
+        }
+    }
+
+    async function toggleWhitelist(filename, addToWhitelist) {
+        if (!confirm(`确定要${addToWhitelist ? '加入' : '移出'}白名单吗？`)) return;
+        try {
+            const response = await fetch(`/api/clipboard/whitelist/${filename}?addToWhitelist=${addToWhitelist}`, {
+                method: 'PUT'
+            });
+            if (response.ok) {
+                Toast.show(`已${addToWhitelist ? '加入' : '移出'}白名单`, 'success');
+                await loadFiles();
+            }
+        } catch {
+            Toast.show('操作失败', 'danger');
+        }
+    }
+
+    async function deleteFile(filename) {
+        if (!confirm('确定要永久删除此文件吗？')) return;
+        try {
+            const response = await fetch(`/api/clipboard/deleteFile/${filename}`, {
+                method: 'DELETE'
+            });
+            if (response.ok) {
+                Toast.show('文件已删除', 'success');
+                await loadFiles();
+            }
+        } catch {
+            Toast.show('删除失败', 'danger');
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('uploadForm').addEventListener('submit', async e => {
+            e.preventDefault();
+            await uploadFile(new FormData(e.target));
+            e.target.reset();
         });
 
-        // 处理拖拽上传
         const dropZone = document.getElementById('dropZone');
-        dropZone.addEventListener('dragover', (event) => {
-            event.preventDefault();
-            dropZone.classList.add('dragover');
+        dropZone.addEventListener('dragover', e => {
+            e.preventDefault();
+            dropZone.classList.add('drag-over');
         });
-
-        dropZone.addEventListener('dragleave', () => {
-            dropZone.classList.remove('dragover');
-        });
-
-        dropZone.addEventListener('drop', async (event) => {
-            event.preventDefault();
-            dropZone.classList.remove('dragover');
-            const files = event.dataTransfer.files;
-            const formData = new FormData();
-            for (const file of files) {
-                formData.append('file', file);
-            }
-            await uploadFiles(formData);
-        });
-
-        // 处理粘贴事件，移除 text/html 处理逻辑
-        document.addEventListener('paste', (event) => {
-            const items = event.clipboardData.items;
-            for (const item of items) {
-                if (item.kind === 'file' && item.type.startsWith('image/')) {
-                    pastedImageFile = item.getAsFile();
-                    const img = document.getElementById('pastedImage');
-                    img.style.display = 'block'; // 显示图片
-                    img.src = URL.createObjectURL(pastedImageFile);
-                    img.onload = () => {
-                        setTimeout(() => URL.revokeObjectURL(img.src), 1000); // 延迟释放 URL
-                    };
-                }
-            }
-        });
-
-        // 上传粘贴的图片
-        const uploadPastedImageButton = document.getElementById('uploadPastedImage');
-        uploadPastedImageButton.addEventListener('click', async () => {
-            if (pastedImageFile) {
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+        dropZone.addEventListener('drop', async e => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) {
                 const formData = new FormData();
-                const fileExtension = pastedImageFile.type.split('/')[1]; // 获取文件扩展名
-                const fileName = `pasted_image.${fileExtension}`;
-                const fileWithExtension = new File([pastedImageFile], fileName, { type: pastedImageFile.type });
-                formData.append('file', fileWithExtension);
-                await uploadFiles(formData);
-            } else {
-                showToast('没有粘贴的图片');
+                formData.append('file', e.dataTransfer.files[0]);
+                await uploadFile(formData);
             }
         });
 
-        // 添加粘贴按钮功能，触发粘贴逻辑
-        const pasteImageButton = document.getElementById('pasteImageButton');
-        pasteImageButton.addEventListener('click', async () => {
+        document.getElementById('pasteBtn').addEventListener('click', async () => {
             try {
-                const items = await navigator.clipboard.read();
-                for (const item of items) {
-                    if (item.types.includes('image/png') || item.types.includes('image/jpeg') || item.types.includes('image/webp')) {
-                        const blob = await item.getType(item.types[0]);
-                        pastedImageFile = new File([blob], `pasted_image.${blob.type.split('/')[1]}`, { type: blob.type });
-                        const img = document.getElementById('pastedImage');
-                        img.style.display = 'block'; // 显示图片
-                        img.src = URL.createObjectURL(pastedImageFile);
-                        img.onload = () => {
-                            setTimeout(() => URL.revokeObjectURL(img.src), 1000); // 延迟释放 URL
-                        };
+                const clipboardItems = await navigator.clipboard.read();
+                for (const item of clipboardItems) {
+                    if (item.types.includes('image/png')) {
+                        const blob = await item.getType('image/png');
+                        pastedImageFile = new File([blob], '粘贴的图片.png', { type: 'image/png' });
+                        document.getElementById('pastedImage').style.display = 'block';
+                        document.getElementById('pastedImage').src = URL.createObjectURL(blob);
+                        document.getElementById('uploadPastedBtn').disabled = false;
                     }
                 }
-            } catch (err) {
-                showToast('粘贴图片失败');
-                console.error('粘贴图片失败:', err);
+            } catch (error) {
+                Toast.show('图片粘贴失败', 'danger');
             }
         });
 
-        async function uploadFiles(formData) {
-            try {
-                const xhr = new XMLHttpRequest();
-                xhr.open('POST', '/api/clipboard/upload', true);
-                xhr.upload.onprogress = (event) => {
-                    if (event.lengthComputable) {
-                        const percentComplete = (event.loaded / event.total) * 100;
-                        progressBar.style.width = percentComplete + '%';
-                        progressBar.textContent = Math.round(percentComplete) + '%';
-                    }
-                };
-                xhr.onload = () => {
-                    if (xhr.status === 200) {
-                        uploadResult.textContent = xhr.responseText;
-                        showToast('上传成功');
-                        // 上传成功后重新查询文件列表
-                        displayFiles();
-                    } else {
-                        uploadResult.textContent = `上传出错: ${xhr.statusText}`;
-                        showToast('上传失败');
-                    }
-                    progressBar.style.width = '0%';
-                    progressBar.textContent = '';
-                };
-                xhr.onerror = () => {
-                    uploadResult.textContent = `上传出错: ${xhr.statusText}`;
-                    showToast('上传失败');
-                    progressBar.style.width = '0%';
-                    progressBar.textContent = '';
-                };
-                xhr.send(formData);
-            } catch (error) {
-                uploadResult.textContent = `上传出错: ${error.message}`;
-                showToast('上传失败');
-                progressBar.style.width = '0%';
-                progressBar.textContent = '';
-            }
-        }
+        document.getElementById('uploadPastedBtn').addEventListener('click', async () => {
+            if (!pastedImageFile) return;
+            const formData = new FormData();
+            formData.append('file', pastedImageFile);
+            await uploadFile(formData);
+            document.getElementById('pastedImage').style.display = 'none';
+            document.getElementById('uploadPastedBtn').disabled = true;
+        });
 
-        // 显示所有文件信息
-        async function displayFiles() {
-            try {
-                const response = await fetch('/api/clipboard/queryAllFiles');
-                const files = await response.json();
-                const allFilesDiv = document.getElementById('allFiles');
-                allFilesDiv.innerHTML = ''; // 清空原有内容
-
-                for (const file of files) {
-                    if (file.type === 'text') {
-                        try {
-                            const textResponse = await fetch(`/api/clipboard/files/${file.fileName}`);
-                            const textContent = await textResponse.text();
-                            const pre = document.createElement('pre');
-                            pre.textContent = textContent;
-
-                            const containerDiv = document.createElement('div');
-                            containerDiv.classList.add('file-container');
-
-                            const buttonsDiv = document.createElement('div');
-                            buttonsDiv.classList.add('file-buttons');
-
-                            const copyButton = document.createElement('button');
-                            copyButton.textContent = '复制';
-                            copyButton.classList.add('btn', 'btn-secondary');
-                            copyButton.addEventListener('click', async () => {
-                                try {
-                                    await navigator.clipboard.writeText(textContent);
-                                    showToast('文字已复制到剪贴板');
-                                } catch (error) {
-                                    showToast('复制失败');
-                                }
-                            });
-
-                            const deleteButton = document.createElement('button');
-                            deleteButton.textContent = '删除';
-                            deleteButton.classList.add('btn', 'btn-danger');
-                            deleteButton.addEventListener('click', async () => {
-                                try {
-                                    const deleteResponse = await fetch(`/api/clipboard/deleteFile/${file.fileName}`, {
-                                        method: 'DELETE'
-                                    });
-                                    const deleteResult = await deleteResponse.text();
-                                    showToast(deleteResult);
-                                    // 删除成功后重新查询文件列表
-                                    displayFiles();
-                                } catch (error) {
-                                    showToast('删除出错');
-                                }
-                            });
-
-                            buttonsDiv.appendChild(copyButton);
-                            buttonsDiv.appendChild(deleteButton);
-                            containerDiv.appendChild(buttonsDiv);
-                            containerDiv.appendChild(pre);
-                            allFilesDiv.appendChild(containerDiv);
-                        } catch (error) {
-                            console.error(`获取文字文件 ${file.fileName} 出错:`, error);
-                        }
-                    } else if (file.type === 'image') {
-                        const img = document.createElement('img');
-                        img.src = `/api/clipboard/files/${file.fileName}`;
-                        const p = document.createElement('p');
-                        p.textContent = `文件名: ${file.fileName}`;
-                        p.appendChild(img);
-
-                        const buttonsDiv = document.createElement('div');
-                        buttonsDiv.classList.add('file-buttons');
-
-                        const copyButton = document.createElement('button');
-                        copyButton.textContent = '复制';
-                        copyButton.classList.add('btn', 'btn-secondary');
-                        copyButton.addEventListener('click', async () => {
-                            try {
-                                const response = await fetch(`/api/clipboard/files/${file.fileName}`);
-                                const blob = await response.blob();
-                                await navigator.clipboard.write([
-                                    new ClipboardItem({
-                                        [blob.type]: blob
-                                    })
-                                ]);
-                                showToast('图片已复制到剪贴板');
-                            } catch (error) {
-                                showToast('复制失败');
-                            }
-                        });
-
-                        const deleteButton = document.createElement('button');
-                        deleteButton.textContent = '删除';
-                        deleteButton.classList.add('btn', 'btn-danger');
-                        deleteButton.addEventListener('click', async () => {
-                            try {
-                                const deleteResponse = await fetch(`/api/clipboard/deleteFile/${file.fileName}`, {
-                                    method: 'DELETE'
-                                });
-                                const deleteResult = await deleteResponse.text();
-                                showToast(deleteResult);
-                                // 删除成功后重新查询文件列表
-                                displayFiles();
-                            } catch (error) {
-                                showToast('删除出错');
-                            }
-                        });
-
-                        buttonsDiv.appendChild(copyButton);
-                        buttonsDiv.appendChild(deleteButton);
-                        p.appendChild(buttonsDiv);
-                        allFilesDiv.appendChild(p);
-                    } else if (file.type === 'file') {
-                        const p = document.createElement('p');
-                        p.textContent = `文件名: ${file.fileName}`;
-
-                        const buttonsDiv = document.createElement('div');
-                        buttonsDiv.classList.add('file-buttons');
-
-                        const downloadButton = document.createElement('button');
-                        downloadButton.textContent = '下载';
-                        downloadButton.classList.add('btn', 'btn-primary');
-                        downloadButton.addEventListener('click', () => {
-                            window.location.href = `/api/clipboard/files/${file.fileName}`;
-                        });
-
-                        const deleteButton = document.createElement('button');
-                        deleteButton.textContent = '删除';
-                        deleteButton.classList.add('btn', 'btn-danger');
-                        deleteButton.addEventListener('click', async () => {
-                            try {
-                                const deleteResponse = await fetch(`/api/clipboard/deleteFile/${file.fileName}`, {
-                                    method: 'DELETE'
-                                });
-                                const deleteResult = await deleteResponse.text();
-                                showToast(deleteResult);
-                                // 删除成功后重新查询文件列表
-                                displayFiles();
-                            } catch (error) {
-                                showToast('删除出错');
-                            }
-                        });
-
-                        buttonsDiv.appendChild(downloadButton);
-                        buttonsDiv.appendChild(deleteButton);
-                        p.appendChild(buttonsDiv);
-                        allFilesDiv.appendChild(p);
-                    }
-                }
-            } catch (error) {
-                console.error('查询文件列表出错:', error);
-            }
-        }
-
-        // 页面加载时显示所有文件信息
-        window.onload = displayFiles;
-    </script>
+        loadFiles();
+    });
+</script>
 </body>
-
 </html>

@@ -137,6 +137,16 @@
             color: white !important;
             border-color: var(--success) !important;
         }
+
+        .drop-zone-text {
+            transition: all 0.3s;
+        }
+
+        .drop-zone-hint {
+            font-size: 0.85rem;
+            margin-top: 8px;
+            color: #6c757d;
+        }
     </style>
 </head>
 <body>
@@ -178,38 +188,17 @@
                     <div
                             id="dropZone"
                             class="card border-dashed bg-light mb-4"
-                            style="height: 120px; cursor: pointer;"
+                            style="height: 160px; cursor: pointer;"
                     >
                         <div class="card-body d-flex flex-column justify-content-center text-center text-muted">
-                            <i class="bi bi-upload fs-3 mb-2"></i>
-                            <small>拖放文件到此处上传</small>
-                        </div>
-                    </div>
-
-                    <div class="card">
-                        <div class="card-body">
-                            <h6 class="card-subtitle mb-3">🖼️ 图片粘贴区</h6>
-                            <div class="ratio ratio-16x9 bg-light mb-3">
-                                <img
-                                        id="pastedImage"
-                                        class="img-fluid object-fit-contain"
-                                        style="display: none;"
-                                >
+                            <div class="drop-zone-text">
+                                <i class="bi bi-upload fs-3 mb-2"></i>
+                                <div>拖放文件到此处上传</div>
+                                <div class="drop-zone-hint">或按 Ctrl+V 粘贴图片</div>
                             </div>
-                            <div class="d-grid gap-2">
-                                <button
-                                        id="pasteBtn"
-                                        class="btn btn-outline-secondary"
-                                >
-                                    粘贴图片
-                                </button>
-                                <button
-                                        id="uploadPastedBtn"
-                                        class="btn btn-success"
-                                        disabled
-                                >
-                                    上传图片
-                                </button>
+                            <div id="dropPreview" class="d-none">
+                                <img id="dropPreviewImage" class="img-fluid rounded mb-2" style="max-height: 100px;">
+                                <div>图片已准备上传</div>
                             </div>
                         </div>
                     </div>
@@ -532,14 +521,24 @@
         });
 
         const dropZone = document.getElementById('dropZone');
+        const dropPreview = document.getElementById('dropPreview');
+        const dropPreviewImage = document.getElementById('dropPreviewImage');
+        const dropZoneText = document.querySelector('.drop-zone-text');
+
+        // 处理拖放事件
         dropZone.addEventListener('dragover', e => {
             e.preventDefault();
             dropZone.classList.add('drag-over');
         });
-        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('drag-over');
+        });
+
         dropZone.addEventListener('drop', async e => {
             e.preventDefault();
             dropZone.classList.remove('drag-over');
+
             if (e.dataTransfer.files.length) {
                 const formData = new FormData();
                 formData.append('file', e.dataTransfer.files[0]);
@@ -547,30 +546,36 @@
             }
         });
 
-        document.getElementById('pasteBtn').addEventListener('click', async () => {
-            try {
-                const clipboardItems = await navigator.clipboard.read();
-                for (const item of clipboardItems) {
-                    if (item.types.includes('image/png')) {
-                        const blob = await item.getType('image/png');
-                        pastedImageFile = new File([blob], '粘贴的图片.png', { type: 'image/png' });
-                        document.getElementById('pastedImage').style.display = 'block';
-                        document.getElementById('pastedImage').src = URL.createObjectURL(blob);
-                        document.getElementById('uploadPastedBtn').disabled = false;
-                    }
-                }
-            } catch (error) {
-                Toast.show('图片粘贴失败', 'danger');
-            }
-        });
+        // 处理粘贴事件
+        document.addEventListener('paste', async (e) => {
+            const items = e.clipboardData.items;
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                if (item.type.indexOf('image') !== -1) {
+                    const blob = item.getAsFile();
+                    const file = new File([blob], '粘贴的图片.png', { type: 'image/png' });
 
-        document.getElementById('uploadPastedBtn').addEventListener('click', async () => {
-            if (!pastedImageFile) return;
-            const formData = new FormData();
-            formData.append('file', pastedImageFile);
-            await uploadFile(formData);
-            document.getElementById('pastedImage').style.display = 'none';
-            document.getElementById('uploadPastedBtn').disabled = true;
+                    // 显示预览
+                    const objectUrl = URL.createObjectURL(blob);
+                    dropPreviewImage.src = objectUrl;
+                    dropZoneText.classList.add('d-none');
+                    dropPreview.classList.remove('d-none');
+
+                    // 上传图片
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    await uploadFile(formData);
+
+                    // 重置预览
+                    setTimeout(() => {
+                        dropPreview.classList.add('d-none');
+                        dropZoneText.classList.remove('d-none');
+                        URL.revokeObjectURL(objectUrl);
+                    }, 2000);
+
+                    break;
+                }
+            }
         });
 
         loadFiles();

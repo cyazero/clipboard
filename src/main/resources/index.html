@@ -36,8 +36,8 @@
 
         .content-preview {
             position: relative;
-            max-height: none; /* 取消最大高度限制 */
-            overflow: visible; /* 允许内容自然扩展 */
+            max-height: none;
+            overflow: visible;
         }
 
         .content-preview.has-overflow::after {
@@ -53,7 +53,7 @@
         }
 
         .content-preview::after {
-            z-index: 1; /* 低于按钮层级 */
+            z-index: 1;
         }
 
         .content-full {
@@ -83,9 +83,16 @@
 
         .pre-line {
             transition: max-height 0.3s ease;
+            white-space: pre-wrap; /* 保留所有空白和换行 */
+            word-break: break-word;
+            background-color: #f8f9fa;
+            padding: 12px;
+            border-radius: 4px;
+            font-family: monospace;
+            line-height: 1.5;
+            overflow-x: auto;
         }
 
-        /* 展开时的样式 */
         .pre-line.expanded {
             max-height: none !important;
             overflow: visible;
@@ -93,13 +100,42 @@
 
         .pre-line-container {
             position: relative;
-            padding-bottom: 40px; /* 给按钮留出空间 */
+            padding-bottom: 40px;
         }
 
         .show-full-btn {
-            position: relative; /* 改为相对定位 */
-            z-index: 10; /* 确保按钮可见 */
+            position: relative;
+            z-index: 10;
             margin-top: 8px;
+        }
+
+        .copy-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            z-index: 20;
+            opacity: 0.7;
+            transition: opacity 0.2s;
+            background-color: white;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 12px;
+        }
+
+        .copy-btn:hover {
+            opacity: 1;
+            background-color: #f8f9fa;
+        }
+
+        .text-content-wrapper {
+            position: relative;
+        }
+
+        .copy-success {
+            background-color: var(--success) !important;
+            color: white !important;
+            border-color: var(--success) !important;
         }
     </style>
 </head>
@@ -208,7 +244,8 @@
         static show(message, type = 'info') {
             const toastEl = document.getElementById('toast');
             const toastBody = toastEl.querySelector('.toast-body');
-            toastEl.className = `toast show bg-${type} text-white`;
+            const bgClass = type === 'success' ? 'bg-success' : type === 'danger' ? 'bg-danger' : 'bg-dark';
+            toastEl.className = `toast show ${bgClass} text-white`;
             toastBody.textContent = message;
             setTimeout(() => toastEl.classList.remove('show'), 3000);
         }
@@ -257,7 +294,7 @@
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <div class="d-flex align-items-center">
                         <img src="${file.isWhitelisted ?
-            'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSIjMjhhNzQ1Ij48cGF0aCBkPSJNMTkuMjkzIDUuMjkzTDkgMTUuNTg2IDQuNzA3IDExLjI5MyAzLjI5MyAxMi43MDcgOSAxOC40MTQgMjAuNzA3IDYuNzA3eiIvPjwvc3ZnPg==' :
+            'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGViZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSIjMjhhNzQ1Ij48cGF0aCBkPSJNMTkuMjkzIDUuMjkzTDkgMTUuNTg2IDQuNzA3IDExLjI5MyAzLjI5MyAxMi43MDcgOSAxOC40MTQgMjAuNzA3IDYuNzA3eiIvPjwvc3ZnPg==' :
             'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSIjNmM3NTgwIj48cGF0aCBkPSJNMTkgNWgydjE0aC0ydjE0SDU2djJIMThWN0g1VjVoMTR6TTMxIDE5VjVoMTR2MThIMzF6Ii8+PC9zdmc+'}"
                              class="whitelist-icon">
                         <span class="ms-2">${file.fileName}</span>
@@ -269,11 +306,12 @@
                 <div class="card-body">
                     ${file.type === 'text' ? `
                         <div class="content-preview">
-                            <!-- 将pre改为div避免嵌套限制 -->
-                            <div class="pre-line-container" id="pre-${encodeURIComponent(file.fileName)}">
-                                <div class="d-flex align-items-center text-muted">
-                                    <div class="spinner-border spinner-border-sm me-2"></div>
-                                    正在加载内容...
+                            <div class="text-content-wrapper">
+                                <div class="pre-line-container" id="pre-${encodeURIComponent(file.fileName)}">
+                                    <div class="d-flex align-items-center text-muted">
+                                        <div class="spinner-border spinner-border-sm me-2"></div>
+                                        正在加载内容...
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -304,18 +342,9 @@
         `).join('');
     }
 
-    function getSafeElement(encodedFileName) {
-        try {
-            return document.querySelector(`#pre-${CSS.escape(encodedFileName)}`);
-        } catch {
-            return null;
-        }
-    }
-
     async function loadTextContents(files) {
         const textFiles = files.filter(f => f.type === 'text');
 
-        // 使用串行加载确保稳定性
         for (const file of textFiles) {
             const encodedFileName = encodeURIComponent(file.fileName);
             const containerId = `pre-${encodedFileName}`;
@@ -327,7 +356,6 @@
             }
 
             try {
-                // 显示加载状态
                 container.innerHTML = `
                 <div class="d-flex align-items-center text-muted">
                     <div class="spinner-border spinner-border-sm me-2"></div>
@@ -335,27 +363,37 @@
                 </div>
             `;
 
-                // 发起内容请求
                 const response = await fetch(`/api/clipboard/files/${encodedFileName}`);
                 if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
                 const content = await response.text();
 
-                // 更新内容显示（同步操作）
+                // 存储原始内容用于复制
+                container.dataset.fullContent = content;
+
                 if (content.length > MAX_PREVIEW_LENGTH) {
                     container.innerHTML = `
-                    <div class="pre-line" style="max-height:200px;overflow:hidden;">
-                        ${escapeHtml(content)}
+                    <div class="text-content-wrapper">
+                        <div class="pre-line" style="max-height:200px;overflow:hidden;">
+                            ${escapeHtml(content)}
+                        </div>
+                        <button class="copy-btn" onclick="copyTextContent('${encodedFileName}', this)" title="复制内容">
+                            复制
+                        </button>
+                        <button class="btn btn-link p-0 mt-2 show-full-btn"
+                                onclick="toggleExpand('${encodedFileName}')">
+                            显示完整内容
+                        </button>
                     </div>
-                    <button class="btn btn-link p-0 mt-2 show-full-btn"
-                            onclick="toggleExpand('${encodedFileName}')">
-                        显示完整内容
-                    </button>
-                    <div class="text-muted">...（内容已截断）</div>
                 `;
                 } else {
                     container.innerHTML = `
-                    <div class="pre-line">
-                        ${escapeHtml(content)}
+                    <div class="text-content-wrapper">
+                        <div class="pre-line">
+                            ${escapeHtml(content)}
+                        </div>
+                        <button class="copy-btn" onclick="copyTextContent('${encodedFileName}', this)" title="复制内容">
+                            复制
+                        </button>
                     </div>
                 `;
                 }
@@ -374,11 +412,79 @@
         }
     }
 
+    // 复制文本内容功能 - 修复版本
+    async function copyTextContent(encodedFileName, buttonElement) {
+        try {
+            const container = document.getElementById(`pre-${encodedFileName}`);
+            if (!container) {
+                Toast.show('找不到内容', 'danger');
+                return;
+            }
+
+            const content = container.dataset.fullContent;
+            if (!content) {
+                Toast.show('内容未加载', 'danger');
+                return;
+            }
+
+            // 使用现代Clipboard API或降级方案
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(content);
+                Toast.show('内容已复制到剪贴板', 'success');
+            } else {
+                // 降级方案：使用textarea和execCommand
+                const textArea = document.createElement('textarea');
+                textArea.value = content;
+                textArea.style.position = 'fixed';
+                textArea.style.opacity = '0';
+                document.body.appendChild(textArea);
+                textArea.select();
+
+                try {
+                    const successful = document.execCommand('copy');
+                    if (successful) {
+                        Toast.show('内容已复制到剪贴板', 'success');
+                    } else {
+                        throw new Error('复制命令失败');
+                    }
+                } catch (err) {
+                    Toast.show('复制失败，请手动选择文本复制', 'danger');
+                }
+
+                document.body.removeChild(textArea);
+            }
+
+            // 添加复制成功视觉效果
+            if (buttonElement) {
+                const originalText = buttonElement.textContent;
+                const originalClass = buttonElement.className;
+
+                buttonElement.textContent = '已复制!';
+                buttonElement.className = originalClass + ' copy-success';
+
+                setTimeout(() => {
+                    buttonElement.textContent = originalText;
+                    buttonElement.className = originalClass;
+                }, 2000);
+            }
+        } catch (error) {
+            console.error('复制失败:', error);
+            Toast.show('复制失败: ' + error.message, 'danger');
+        }
+    }
+
     function toggleExpand(filename) {
         const encoded = encodeURIComponent(filename);
         const container = document.querySelector(`#pre-${CSS.escape(encoded)} .pre-line`);
+        const button = document.querySelector(`#pre-${CSS.escape(encoded)} .show-full-btn`);
         if (container) {
-            container.style.maxHeight = container.style.maxHeight === '200px' ? 'none' : '200px';
+            if (container.style.maxHeight === '200px' || !container.style.maxHeight) {
+                container.style.maxHeight = 'none';
+                if (button) button.textContent = '收起内容';
+            } else {
+                container.style.maxHeight = '200px';
+                if (button) button.textContent = '显示完整内容';
+            }
         }
     }
 
@@ -386,17 +492,6 @@
         return unsafe.replace(/[&<"'>]/g, m => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
         }[m]));
-    }
-
-    async function loadFullContent(filename, button) {
-        try {
-            const response = await fetch(`/api/clipboard/files/${filename}`);
-            const content = await response.text();
-            const pre = button.closest('pre');
-            pre.innerHTML = `<div class="pre-line content-full">${escapeHtml(content)}</div>`;
-        } catch {
-            Toast.show('加载完整内容失败', 'danger');
-        }
     }
 
     async function toggleWhitelist(filename, addToWhitelist) {

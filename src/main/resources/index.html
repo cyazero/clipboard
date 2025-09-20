@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>云剪贴板</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23fff'/%3E%3Cpath d='M25 25h50v10H25z' fill='%23007bff'/%3E%3Cpath d='M25 40h50v45H25zm0 15h50M25 55h50M25 70h50' stroke='%23007bff' stroke-width='4' fill='none'/%3E%3C/svg%3E">
     <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
     <style>
         :root {
@@ -40,37 +39,6 @@
             overflow: visible;
         }
 
-        .content-preview.has-overflow::after {
-            content: '';
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            height: 60px;
-            background: linear-gradient(to bottom, transparent 0%, white 90%);
-            pointer-events: none;
-            z-index: 1;
-        }
-
-        .content-preview::after {
-            z-index: 1;
-        }
-
-        .content-full {
-            max-height: none;
-            overflow: auto;
-        }
-
-        .load-more {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: linear-gradient(to bottom, transparent, white 70%);
-            padding: 2rem 0 1rem;
-            text-align: center;
-        }
-
         .whitelist-icon {
             width: 18px;
             height: 18px;
@@ -83,7 +51,7 @@
 
         .pre-line {
             transition: max-height 0.3s ease;
-            white-space: pre-wrap; /* 保留所有空白和换行 */
+            white-space: pre-wrap;
             word-break: break-word;
             background-color: #f8f9fa;
             padding: 12px;
@@ -91,22 +59,6 @@
             font-family: monospace;
             line-height: 1.5;
             overflow-x: auto;
-        }
-
-        .pre-line.expanded {
-            max-height: none !important;
-            overflow: visible;
-        }
-
-        .pre-line-container {
-            position: relative;
-            padding-bottom: 40px;
-        }
-
-        .show-full-btn {
-            position: relative;
-            z-index: 10;
-            margin-top: 8px;
         }
 
         .copy-btn {
@@ -147,10 +99,40 @@
             margin-top: 8px;
             color: #6c757d;
         }
+
+        .key-management {
+            background-color: #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .progress-container {
+            margin-top: 10px;
+        }
+
+        .chunk-progress {
+            height: 8px;
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body>
 <div class="container py-4">
+    <!-- AES密钥管理区域 -->
+    <div class="key-management">
+        <h5 class="mb-3">🔑 AES密钥管理</h5>
+        <div class="mb-3">
+            <label class="form-label">加密密钥</label>
+            <input type="password" id="aesKeyInput" class="form-control" placeholder="输入AES加密密钥">
+            <div class="form-text">用于文件加密传输，请妥善保管</div>
+        </div>
+        <div class="d-flex gap-2">
+            <button class="btn btn-success flex-grow-1" onclick="rememberKey()">记住密钥</button>
+            <button class="btn btn-danger flex-grow-1" onclick="clearKey()">清除密钥</button>
+        </div>
+    </div>
+
     <div class="row g-4">
         <div class="col-lg-4">
             <div class="card shadow-sm">
@@ -202,6 +184,20 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- 上传进度 -->
+                    <div id="uploadProgress" class="d-none">
+                        <div class="d-flex justify-content-between mb-1">
+                            <span>上传进度</span>
+                            <span id="progressPercent">0%</span>
+                        </div>
+                        <div class="progress chunk-progress">
+                            <div id="progressBar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                        </div>
+                        <div class="mt-2 text-center">
+                            <button id="cancelUpload" class="btn btn-sm btn-outline-danger">取消上传</button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -227,7 +223,15 @@
 
 <script>
     const MAX_PREVIEW_LENGTH = 1000;
-    let pastedImageFile = null;
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 40MB分片
+    let currentUpload = {
+        sessionId: null,
+        file: null,
+        chunks: 0,
+        uploaded: 0,
+        controller: null,
+        isCancelled: false
+    };
 
     class Toast {
         static show(message, type = 'info') {
@@ -240,30 +244,289 @@
         }
     }
 
-    async function uploadFile(formData) {
-        const btn = document.querySelector('#uploadForm button');
-        btn.disabled = true;
-        btn.querySelector('.upload-text').classList.add('d-none');
-        btn.querySelector('.spinner-border').classList.remove('d-none');
+    // 密钥管理
+    function rememberKey() {
+        const key = document.getElementById('aesKeyInput').value;
+        if (key) {
+            localStorage.setItem('aesKey', key);
+            Toast.show('密钥已保存', 'success');
+        } else {
+            Toast.show('请输入密钥', 'danger');
+        }
+    }
+
+    function clearKey() {
+        localStorage.removeItem('aesKey');
+        document.getElementById('aesKeyInput').value = '';
+        Toast.show('密钥已清除', 'success');
+    }
+
+    // 初始化密钥输入框
+    document.addEventListener('DOMContentLoaded', () => {
+        const savedKey = localStorage.getItem('aesKey');
+        if (savedKey) {
+            document.getElementById('aesKeyInput').value = savedKey;
+        }
+        loadFiles();
+    });
+
+    // 获取当前密钥
+    function getAesKey() {
+        return document.getElementById('aesKeyInput').value || localStorage.getItem('aesKey') || '';
+    }
+
+    // 密钥派生函数
+    async function deriveKey(password) {
+        const encoder = new TextEncoder();
+        const passwordBuffer = encoder.encode(password);
+
+        // 使用固定盐值（与后端一致）
+        const salt = encoder.encode("FixedSaltValue123");
+
+        // 导入密码作为原始密钥
+        const baseKey = await crypto.subtle.importKey(
+            "raw",
+            passwordBuffer,
+            { name: "PBKDF2" },
+            false,
+            ["deriveBits"]
+        );
+
+        // 使用PBKDF2派生密钥
+        const derivedBits = await crypto.subtle.deriveBits(
+            {
+                name: "PBKDF2",
+                salt: salt,
+                iterations: 65536,
+                hash: "SHA-256"
+            },
+            baseKey,
+            256 // 256位密钥
+        );
+
+        // 导入为AES密钥
+        return crypto.subtle.importKey(
+            "raw",
+            derivedBits,
+            { name: "AES-CBC" },
+            false,
+            ["encrypt", "decrypt"]
+        );
+    }
+
+    // 加密函数 - 修复版
+    async function encryptChunk(data, password) {
+        if (!password) throw new Error('未提供AES密钥');
+
+        // 派生密钥
+        const key = await deriveKey(password);
+
+        const iv = crypto.getRandomValues(new Uint8Array(16));
+        const encrypted = await crypto.subtle.encrypt(
+            { name: "AES-CBC", iv },
+            key,
+            data
+        );
+
+        // 将IV前置到加密数据中
+        const result = new Uint8Array(iv.length + encrypted.byteLength);
+        result.set(iv, 0);
+        result.set(new Uint8Array(encrypted), iv.length);
+
+        return result;
+    }
+
+    // 解密函数 - 修复版
+    async function decryptChunk(encryptedData, password) {
+        if (!password) throw new Error('未提供AES密钥');
+
+        const iv = encryptedData.slice(0, 16);
+        const ciphertext = encryptedData.slice(16);
+
+        // 派生密钥
+        const key = await deriveKey(password);
+
+        return crypto.subtle.decrypt(
+            { name: "AES-CBC", iv },
+            key,
+            ciphertext
+        );
+    }
+
+    // 上传文本
+    async function uploadText(text) {
+        const key = getAesKey();
+        if (!key) {
+            Toast.show('请先输入AES密钥', 'danger');
+            return;
+        }
 
         try {
-            const response = await fetch('/api/clipboard/upload', {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(text);
+            const encrypted = await encryptChunk(data, key);
+
+            // 转换为Base64以便传输
+            const encryptedBase64 = arrayBufferToBase64(encrypted);
+
+            const formData = new FormData();
+            formData.append('text', encryptedBase64);
+
+            const response = await fetch('/api/clipboard/uploadText', {
                 method: 'POST',
                 body: formData
             });
 
             if (!response.ok) throw new Error('上传失败');
-            Toast.show('上传成功', 'success');
+            Toast.show('文本上传成功', 'success');
             await loadFiles();
         } catch (error) {
             Toast.show(error.message, 'danger');
-        } finally {
-            btn.disabled = false;
-            btn.querySelector('.upload-text').classList.remove('d-none');
-            btn.querySelector('.spinner-border').classList.add('d-none');
         }
     }
 
+    // 上传文件（分片）
+    async function uploadFile(file) {
+        const key = getAesKey();
+        if (!key) {
+            Toast.show('请先输入AES密钥', 'danger');
+            return;
+        }
+
+        // 初始化上传状态
+        currentUpload = {
+            sessionId: generateUUID(),
+            file: file,
+            chunks: Math.ceil(file.size / CHUNK_SIZE),
+            uploaded: 0,
+            controller: new AbortController(),
+            isCancelled: false
+        };
+
+        // 显示进度
+        document.getElementById('uploadProgress').classList.remove('d-none');
+        updateProgress();
+
+        try {
+            // 检查已上传的分片
+            const response = await fetch(`/api/clipboard/checkChunks/${currentUpload.sessionId}`);
+            const uploadedChunks = response.ok ? await response.json() : [];
+
+            // 上传所有分片
+            for (let i = 0; i < currentUpload.chunks; i++) {
+                if (currentUpload.isCancelled) break;
+
+                // 跳过已上传的分片
+                if (uploadedChunks.includes(i)) {
+                    currentUpload.uploaded++;
+                    updateProgress();
+                    continue;
+                }
+
+                const start = i * CHUNK_SIZE;
+                const end = Math.min(start + CHUNK_SIZE, file.size);
+                const chunk = file.slice(start, end);
+
+                // 加密分片
+                const encrypted = await encryptChunk(await chunk.arrayBuffer(), key);
+
+                // 创建FormData
+                const formData = new FormData();
+                formData.append('sessionId', currentUpload.sessionId);
+                formData.append('chunkIndex', i.toString());
+                formData.append('totalChunks', currentUpload.chunks.toString());
+                formData.append('fileName', file.name);
+                formData.append('data', new Blob([encrypted]));
+
+                // 上传分片
+                await fetch('/api/clipboard/uploadChunk', {
+                    method: 'POST',
+                    body: formData,
+                    signal: currentUpload.controller.signal
+                });
+
+                currentUpload.uploaded++;
+                updateProgress();
+            }
+
+            if (currentUpload.isCancelled) {
+                Toast.show('上传已取消', 'warning');
+            } else {
+                Toast.show('文件上传成功', 'success');
+                await loadFiles();
+            }
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                Toast.show(`上传失败: ${error.message}`, 'danger');
+            }
+        } finally {
+            // 重置上传状态
+            document.getElementById('uploadProgress').classList.add('d-none');
+            currentUpload = {
+                sessionId: null,
+                file: null,
+                chunks: 0,
+                uploaded: 0,
+                controller: null,
+                isCancelled: false
+            };
+        }
+    }
+
+    // 下载文件 - 修复版
+    async function downloadFile(fileName) {
+        const key = getAesKey();
+        if (!key) {
+            Toast.show('请先输入AES密钥', 'danger');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/clipboard/files/${encodeURIComponent(fileName)}`);
+            if (!response.ok) throw new Error('下载失败');
+
+            const encryptedData = await response.arrayBuffer();
+
+            // 解密内容
+            const decrypted = await decryptChunk(new Uint8Array(encryptedData), key);
+
+            // 创建下载链接
+            const blob = new Blob([decrypted]);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+
+            // 清理
+            setTimeout(() => {
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 100);
+
+            Toast.show('文件下载成功', 'success');
+        } catch (error) {
+            Toast.show(`下载失败: ${error.message}`, 'danger');
+        }
+    }
+
+    // 更新上传进度
+    function updateProgress() {
+        const percent = Math.round((currentUpload.uploaded / currentUpload.chunks) * 100);
+        document.getElementById('progressBar').style.width = `${percent}%`;
+        document.getElementById('progressPercent').textContent = `${percent}%`;
+    }
+
+    // 取消上传
+    document.getElementById('cancelUpload').addEventListener('click', () => {
+        if (currentUpload.controller) {
+            currentUpload.controller.abort();
+            currentUpload.isCancelled = true;
+        }
+    });
+
+    // 加载文件列表
     async function loadFiles() {
         try {
             const response = await fetch('/api/clipboard/queryAllFiles');
@@ -309,11 +572,11 @@
                              class="img-fluid rounded"
                              loading="lazy">
                     ` : `
-                        <a href="/api/clipboard/files/${encodeURIComponent(file.fileName)}"
-                           class="btn btn-outline-primary w-100"
-                           download="${file.fileName}">
+                        <button class="btn btn-outline-primary w-100"
+                                onclick="downloadFile('${encodeURIComponent(file.fileName)}')"
+                                title="下载文件">
                             下载文件
-                        </a>
+                        </button>
                     `}
                 </div>
                 <div class="card-footer d-flex justify-content-between">
@@ -331,6 +594,7 @@
         `).join('');
     }
 
+    // 加载文本内容 - 修复版
     async function loadTextContents(files) {
         const textFiles = files.filter(f => f.type === 'text');
 
@@ -345,63 +609,78 @@
             }
 
             try {
+                // 显示加载中
                 container.innerHTML = `
-                <div class="d-flex align-items-center text-muted">
-                    <div class="spinner-border spinner-border-sm me-2"></div>
-                    正在加载内容...
-                </div>
-            `;
+                    <div class="d-flex align-items-center text-muted">
+                        <div class="spinner-border spinner-border-sm me-2"></div>
+                        正在加载内容...
+                    </div>
+                `;
 
                 const response = await fetch(`/api/clipboard/files/${encodedFileName}`);
                 if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
-                const content = await response.text();
+
+                // 获取ArrayBuffer
+                const encryptedData = await response.arrayBuffer();
+
+                // 获取密钥
+                const key = getAesKey();
+                if (!key) {
+                    throw new Error('未提供AES密钥');
+                }
+
+                // 解密
+                const decrypted = await decryptChunk(new Uint8Array(encryptedData), key);
+                const decoder = new TextDecoder();
+                const content = decoder.decode(decrypted);
 
                 // 存储原始内容用于复制
                 container.dataset.fullContent = content;
 
+                // 根据内容长度决定显示方式
                 if (content.length > MAX_PREVIEW_LENGTH) {
                     container.innerHTML = `
-                    <div class="text-content-wrapper">
-                        <div class="pre-line" style="max-height:200px;overflow:hidden;">
-                            ${escapeHtml(content)}
+                        <div class="text-content-wrapper">
+                            <div class="pre-line" style="max-height:200px;overflow:hidden;">
+                                ${escapeHtml(content)}
+                            </div>
+                            <button class="copy-btn" onclick="copyTextContent('${encodedFileName}', this)" title="复制内容">
+                                复制
+                            </button>
+                            <button class="btn btn-link p-0 mt-2 show-full-btn"
+                                    onclick="toggleExpand('${encodedFileName}')">
+                                显示完整内容
+                            </button>
                         </div>
-                        <button class="copy-btn" onclick="copyTextContent('${encodedFileName}', this)" title="复制内容">
-                            复制
-                        </button>
-                        <button class="btn btn-link p-0 mt-2 show-full-btn"
-                                onclick="toggleExpand('${encodedFileName}')">
-                            显示完整内容
-                        </button>
-                    </div>
-                `;
+                    `;
                 } else {
                     container.innerHTML = `
-                    <div class="text-content-wrapper">
-                        <div class="pre-line">
-                            ${escapeHtml(content)}
+                        <div class="text-content-wrapper">
+                            <div class="pre-line">
+                                ${escapeHtml(content)}
+                            </div>
+                            <button class="copy-btn" onclick="copyTextContent('${encodedFileName}', this)" title="复制内容">
+                                复制
+                            </button>
                         </div>
-                        <button class="copy-btn" onclick="copyTextContent('${encodedFileName}', this)" title="复制内容">
-                            复制
-                        </button>
-                    </div>
-                `;
+                    `;
                 }
             } catch (error) {
                 console.error('内容加载失败:', error);
                 container.innerHTML = `
-                <div class="text-danger">
-                    加载失败: ${error.message}
-                    <button class="btn btn-link p-0"
-                            onclick="window.loadTextContents([${JSON.stringify(file)}])">
-                        重试
-                    </button>
-                </div>
-            `;
+                    <div class="text-danger">
+                        加载失败: ${error.message}
+                        <button class="btn btn-link p-0"
+                                onclick="loadTextContents([${JSON.stringify(file)}])">
+                            重试
+                        </button>
+                    </div>
+                `;
             }
         }
     }
 
-    // 复制文本内容功能 - 修复版本
+    // 复制文本内容功能
     async function copyTextContent(encodedFileName, buttonElement) {
         try {
             const container = document.getElementById(`pre-${encodedFileName}`);
@@ -416,12 +695,12 @@
                 return;
             }
 
-            // 使用现代Clipboard API或降级方案
+            // 使用现代Clipboard API
             if (navigator.clipboard && window.isSecureContext) {
                 await navigator.clipboard.writeText(content);
                 Toast.show('内容已复制到剪贴板', 'success');
             } else {
-                // 降级方案：使用textarea和execCommand
+                // 降级方案
                 const textArea = document.createElement('textarea');
                 textArea.value = content;
                 textArea.style.position = 'fixed';
@@ -513,10 +792,39 @@
         }
     }
 
+    // 辅助函数
+    function generateUUID() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            const r = Math.random() * 16 | 0;
+            const v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    }
+
+    function arrayBufferToBase64(buffer) {
+        let binary = '';
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('uploadForm').addEventListener('submit', async e => {
             e.preventDefault();
-            await uploadFile(new FormData(e.target));
+
+            const text = document.getElementById('textInput').value;
+            const fileInput = document.getElementById('fileInput');
+
+            if (text) {
+                await uploadText(text);
+            } else if (fileInput.files.length > 0) {
+                await uploadFile(fileInput.files[0]);
+            } else {
+                Toast.show('请提供文本或文件', 'warning');
+            }
+
             e.target.reset();
         });
 
@@ -540,9 +848,7 @@
             dropZone.classList.remove('drag-over');
 
             if (e.dataTransfer.files.length) {
-                const formData = new FormData();
-                formData.append('file', e.dataTransfer.files[0]);
-                await uploadFile(formData);
+                await uploadFile(e.dataTransfer.files[0]);
             }
         });
 
@@ -562,9 +868,7 @@
                     dropPreview.classList.remove('d-none');
 
                     // 上传图片
-                    const formData = new FormData();
-                    formData.append('file', file);
-                    await uploadFile(formData);
+                    await uploadFile(file);
 
                     // 重置预览
                     setTimeout(() => {
@@ -577,8 +881,6 @@
                 }
             }
         });
-
-        loadFiles();
     });
 </script>
 </body>

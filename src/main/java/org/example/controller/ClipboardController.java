@@ -1,18 +1,27 @@
 package org.example.controller;
 
-import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
-import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.io.Resource;
+import org.apache.commons.io.FileUtils;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import javax.crypto.Cipher;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.security.spec.KeySpec;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -20,49 +29,58 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-/**
- * @author cuiyao
- * Created on 2025/02/10
- */
 @RestController
 @RequestMapping("/api/clipboard")
 public class ClipboardController {
 
-    // 保存文件的目录
     private static final String SAVE_DIR = "temp_files";
-    // 保存文件的创建时间
+    private static final String CHUNK_DIR = "file_chunks";
     private static final Map<String, Long> fileCreationTimes = new ConcurrentHashMap<>();
-    // 新增白名单集合（存储文件绝对路径）
     private static final Set<String> whitelistedFiles = ConcurrentHashMap.newKeySet();
-    // 定时任务执行器
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-    // 最大文件总大小 1GB
-    private static final long MAX_TOTAL_SIZE = (long) 1024 * 1024 * 1024;
+    private static final Map<String, Set<Integer>> chunkStatus = new ConcurrentHashMap<>();
+    private static final byte[] PBKDF2_SALT = "FixedSaltValue123".getBytes();
+
+    @Value("${aes.secret.key:defaultSecretKey12345678901234567890}")
+    private String serverAesKey;
+
     static {
+        try {
+            Files.createDirectories(Paths.get(SAVE_DIR));
+            Files.createDirectories(Paths.get(CHUNK_DIR));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
         scheduler.scheduleAtFixedRate(() -> {
             try {
                 long currentTime = System.currentTimeMillis();
                 List<String> filePaths = new ArrayList<>(fileCreationTimes.keySet());
 
                 for (String filePath : filePaths) {
-                    // 检查白名单
-                    if (whitelistedFiles.contains(filePath)) {
-                        continue;
-                    }
-
+                    if (whitelistedFiles.contains(filePath)) continue;
                     Long creationTime = fileCreationTimes.get(filePath);
                     if (creationTime == null) continue;
 
                     if (currentTime - creationTime > 3 * 60 * 60 * 1000) {
                         File file = new File(filePath);
-                        if (file.exists()) {
-                            if (file.delete()) {
-                                fileCreationTimes.remove(filePath);
-                                whitelistedFiles.remove(filePath); // 清理无效白名单
-                            }
+                        if (file.exists() && file.delete()) {
+                            fileCreationTimes.remove(filePath);
+                            whitelistedFiles.remove(filePath);
                         } else {
                             fileCreationTimes.remove(filePath);
                             whitelistedFiles.remove(filePath);
+                        }
+                    }
+                }
+
+                // 清理超过24小时未完成的分片
+                File chunkRoot = new File(CHUNK_DIR);
+                if (chunkRoot.exists()) {
+                    for (File sessionDir : Objects.requireNonNull(chunkRoot.listFiles())) {
+                        if (System.currentTimeMillis() - sessionDir.lastModified() > 24 * 60 * 60 * 1000) {
+                            FileUtils.deleteQuietly(sessionDir);
+                            chunkStatus.remove(sessionDir.getName());
                         }
                     }
                 }
@@ -72,99 +90,173 @@ public class ClipboardController {
         }, 1, 1, TimeUnit.HOURS);
     }
 
-    //添加/移除白名单
+    // 密钥派生函数
+    private byte[] deriveKey(String password) throws Exception {
+        SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        KeySpec spec = new PBEKeySpec(password.toCharArray(), PBKDF2_SALT, 65536, 256);
+        return factory.generateSecret(spec).getEncoded();
+    }
+
     @PutMapping("/whitelist/{fileName}")
     public ResponseEntity<String> manageWhitelist(
             @PathVariable String fileName,
             @RequestParam(defaultValue = "true") boolean addToWhitelist) {
         File targetFile = new File(SAVE_DIR, fileName);
-
-        if (!targetFile.exists()) {
-            return ResponseEntity.status(404).body("文件不存在");
-        }
+        if (!targetFile.exists()) return ResponseEntity.status(404).body("文件不存在");
 
         String absolutePath = targetFile.getAbsolutePath();
-        if (addToWhitelist) {
-            whitelistedFiles.add(absolutePath);
-        } else {
-            whitelistedFiles.remove(absolutePath);
-        }
+        if (addToWhitelist) whitelistedFiles.add(absolutePath);
+        else whitelistedFiles.remove(absolutePath);
 
         return ResponseEntity.ok("操作成功");
     }
 
-    @PostMapping("/upload")
-    public String handleUpload(@RequestParam(value = "text", required = false) String text,
-                               @RequestPart(value = "file", required = false) MultipartFile file) {
+    @GetMapping("/checkChunks/{sessionId}")
+    public ResponseEntity<Set<Integer>> checkChunks(@PathVariable String sessionId) {
+        Path chunkPath = Paths.get(CHUNK_DIR, sessionId);
+        if (!Files.exists(chunkPath)) return ResponseEntity.ok(Collections.emptySet());
+
+        Set<Integer> uploadedChunks = new TreeSet<>();
+        File[] chunks = chunkPath.toFile().listFiles();
+        if (chunks != null) {
+            for (File chunk : chunks) {
+                try {
+                    String name = chunk.getName();
+                    if (name.endsWith(".chunk")) {
+                        int index = Integer.parseInt(name.substring(0, name.indexOf('.')));
+                        uploadedChunks.add(index);
+                    }
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        return ResponseEntity.ok(uploadedChunks);
+    }
+
+    @PostMapping("/uploadChunk")
+    public ResponseEntity<String> uploadChunk(
+            @RequestParam("sessionId") String sessionId,
+            @RequestParam("chunkIndex") int chunkIndex,
+            @RequestParam("totalChunks") int totalChunks,
+            @RequestParam("fileName") String fileName,
+            @RequestPart("data") MultipartFile chunkData) {
+
         try {
-            // 检查当前文件总大小
-            long currentTotalSize = calculateTotalFileSize();
-            if (text != null && !text.isEmpty()) {
-                long textSize = text.getBytes().length;
-                if (currentTotalSize + textSize > MAX_TOTAL_SIZE) {
-                    return "上传失败，文件总大小将超过 1GB";
-                }
-                // 保存文字到文件
-                String fileName = saveTextToFile(text);
-                return "Saved successfully: " + fileName;
-            } else if (file != null && !file.isEmpty()) {
-                long fileSize = file.getSize();
-                if (currentTotalSize + fileSize > MAX_TOTAL_SIZE) {
-                    return "上传失败，文件总大小将超过 1GB";
-                }
-                // 保存上传的文件
-                String fileName = saveUploadedFile(file);
-                return "Saved successfully: " + fileName;
-            } else {
-                return "No text or file provided";
+            // 直接获取二进制数据
+            byte[] encryptedData = chunkData.getBytes();
+
+            // 分离IV和加密内容
+            if (encryptedData.length < 16) {
+                return ResponseEntity.badRequest().body("无效的分片数据");
             }
-        } catch (IOException e) {
-            return "Error saving data: " + e.getMessage();
-        }
-    }
-    private String saveTextToFile(String text) throws IOException {
-        // 创建保存目录
-        Path savePath = Paths.get(SAVE_DIR);
-        if (!Files.exists(savePath)) {
-            Files.createDirectories(savePath);
-        }
-        // 获取当前时间并格式化为字符串
-        String timestamp = new SimpleDateFormat("yyyyMMddHHmmss").format(new Date());
-        String fileName = "text_" + timestamp + ".txt";
-        File file = new File(savePath.toFile(), fileName);
-        try (FileOutputStream fos = new FileOutputStream(file)) {
-            fos.write(text.getBytes());
-        }
-        // 记录文件创建时间
-        fileCreationTimes.put(file.getAbsolutePath(), System.currentTimeMillis());
-        return fileName;
-    }
-    private String saveUploadedFile(MultipartFile file) throws IOException {
-        String originalFileName = file.getOriginalFilename();
-        Path savePath = Paths.get(SAVE_DIR);
-        if (!Files.exists(savePath)) {
-            Files.createDirectories(savePath);
-        }
-        assert originalFileName != null;
-        File dest = new File(savePath.toFile(), originalFileName);
-        if (dest.exists()) {
-            int count = 1;
-            String baseName = originalFileName.substring(0, originalFileName.lastIndexOf("."));
-            String extension = originalFileName.substring(originalFileName.lastIndexOf("."));
-            while (dest.exists()) {
-                String newFileName = baseName + "_" + count + extension;
-                dest = new File(savePath.toFile(), newFileName);
-                count++;
+            byte[] iv = Arrays.copyOfRange(encryptedData, 0, 16);
+            byte[] ciphertext = Arrays.copyOfRange(encryptedData, 16, encryptedData.length);
+
+            // 使用服务端密钥解密
+            byte[] decrypted = decrypt(ciphertext, serverAesKey, iv);
+
+            // 保存分片
+            Path chunkPath = Paths.get(CHUNK_DIR, sessionId);
+            Files.createDirectories(chunkPath);
+            Path chunkFile = chunkPath.resolve(chunkIndex + ".chunk");
+            Files.write(chunkFile, decrypted);
+
+            // 更新分片状态
+            chunkStatus.computeIfAbsent(sessionId, k -> new HashSet<>()).add(chunkIndex);
+
+            // 检查是否全部完成
+            if (isUploadComplete(chunkPath, totalChunks)) {
+                mergeFile(chunkPath, fileName);
+                return ResponseEntity.ok("文件上传完成: " + fileName);
             }
-            originalFileName = dest.getName();
+
+            return ResponseEntity.ok("分片接收成功");
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("分片处理失败: " + e.getMessage());
         }
-        try (FileOutputStream fos = new FileOutputStream(dest)) {
-            fos.write(file.getBytes());
-        }
-        // 记录文件创建时间
-        fileCreationTimes.put(dest.getAbsolutePath(), System.currentTimeMillis());
-        return originalFileName;
     }
+
+    @PostMapping("/uploadText")
+    public ResponseEntity<String> uploadText(
+            @RequestParam("text") String text) {
+
+        try {
+            // Base64解码
+            byte[] encryptedData = Base64.getDecoder().decode(text);
+
+            if (encryptedData.length < 16) {
+                return ResponseEntity.badRequest().body("无效的文本数据");
+            }
+            byte[] iv = Arrays.copyOfRange(encryptedData, 0, 16);
+            byte[] ciphertext = Arrays.copyOfRange(encryptedData, 16, encryptedData.length);
+
+            byte[] decrypted = decrypt(ciphertext, serverAesKey, iv);
+            String decryptedText = new String(decrypted);
+
+            // 保存文字到文件
+            String fileName = saveTextToFile(decryptedText);
+            return ResponseEntity.ok("Saved successfully: " + fileName);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("文本处理失败: " + e.getMessage());
+        }
+    }
+
+    private byte[] decrypt(byte[] ciphertext, String key, byte[] iv) throws Exception {
+        byte[] keyBytes = deriveKey(key);
+        SecretKeySpec keySpec = new SecretKeySpec(keyBytes, "AES");
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(iv));
+        return cipher.doFinal(ciphertext);
+    }
+
+    private boolean isUploadComplete(Path chunkPath, int totalChunks) {
+        File[] chunks = chunkPath.toFile().listFiles();
+        return chunks != null && chunks.length == totalChunks;
+    }
+
+    private void mergeFile(Path chunkPath, String fileName) throws IOException {
+        Path targetFile = getUniqueFilePath(Paths.get(SAVE_DIR), fileName);
+
+        try (OutputStream os = Files.newOutputStream(targetFile, StandardOpenOption.CREATE)) {
+            File[] chunkFiles = chunkPath.toFile().listFiles();
+            if (chunkFiles != null) {
+                Arrays.sort(chunkFiles, Comparator.comparingInt(f -> {
+                    try {
+                        return Integer.parseInt(f.getName().split("\\.")[0]);
+                    } catch (NumberFormatException e) {
+                        return Integer.MAX_VALUE;
+                    }
+                }));
+
+                for (File chunk : chunkFiles) {
+                    Files.copy(chunk.toPath(), os);
+                }
+            }
+        }
+
+        // 记录文件创建时间
+        fileCreationTimes.put(targetFile.toAbsolutePath().toString(), System.currentTimeMillis());
+
+        // 清理分片临时文件
+        FileUtils.deleteDirectory(chunkPath.toFile());
+        chunkStatus.remove(chunkPath.getFileName().toString());
+    }
+
+    private Path getUniqueFilePath(Path dir, String fileName) {
+        Path target = dir.resolve(fileName);
+        if (!Files.exists(target)) return target;
+
+        String baseName = fileName.substring(0, fileName.lastIndexOf('.'));
+        String extension = fileName.substring(fileName.lastIndexOf('.'));
+        int count = 1;
+
+        while (true) {
+            String newFileName = baseName + "(" + count + ")" + extension;
+            Path newPath = dir.resolve(newFileName);
+            if (!Files.exists(newPath)) return newPath;
+            count++;
+        }
+    }
+
     @GetMapping("/queryAllFiles")
     public List<Map<String, Object>> queryAllFiles() {
         List<Map<String, Object>> fileList = new ArrayList<>();
@@ -186,21 +278,53 @@ public class ClipboardController {
         }
         return fileList;
     }
+
     @GetMapping("/files/{fileName}")
-    public ResponseEntity<Resource> getFile(@PathVariable String fileName) {
-        File file = new File(SAVE_DIR, fileName);
-        if (file.exists() && file.isFile()) {
-            Resource resource = new FileSystemResource(file);
+    public ResponseEntity<byte[]> getFile(@PathVariable String fileName) {
+        try {
+            File file = new File(SAVE_DIR, fileName);
+            if (!file.exists() || !file.isFile()) return ResponseEntity.notFound().build();
+
+            // 读取文件内容
+            byte[] fileContent = Files.readAllBytes(file.toPath());
+
+            // 生成随机IV
+            byte[] iv = new byte[16];
+            new Random().nextBytes(iv);
+
+            // 使用服务端密钥加密
+            byte[] encrypted = encrypt(fileContent, serverAesKey, iv);
+
+            // 将IV前置到加密数据中
+            byte[] result = new byte[iv.length + encrypted.length];
+            System.arraycopy(iv, 0, result, 0, iv.length);
+            System.arraycopy(encrypted, 0, result, iv.length, encrypted.length);
+
+            // 设置响应头
             HttpHeaders headers = new HttpHeaders();
             headers.add(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=" + fileName);
+
+            // 设置正确的Content-Type
             String contentType = getContentType(file.toPath());
+            if (contentType == null) contentType = "application/octet-stream";
+
             return ResponseEntity.ok()
                     .headers(headers)
-                    .contentType(MediaType.parseMediaType(contentType != null ? contentType : "application/octet-stream"))
-                    .body(resource);
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .body(result);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).build();
         }
-        return ResponseEntity.notFound().build();
     }
+
+    private byte[] encrypt(byte[] data, String key, byte[] iv) throws Exception {
+        byte[] keyBytes = deriveKey(key);
+        SecretKeySpec keySpec = new SecretKeySpec(keyBytes, "AES");
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, new IvParameterSpec(iv));
+        return cipher.doFinal(data);
+    }
+
     @DeleteMapping("/deleteFile/{fileName}")
     public String deleteFile(@PathVariable String fileName) {
         File file = new File(SAVE_DIR, fileName);
@@ -216,44 +340,35 @@ public class ClipboardController {
         return "File not found";
     }
 
+    private String saveTextToFile(String text) throws IOException {
+        Path savePath = Paths.get(SAVE_DIR);
+        if (!Files.exists(savePath)) Files.createDirectories(savePath);
+
+        String timestamp = new SimpleDateFormat("yyyyMMddHHmmss").format(new Date());
+        String fileName = "text_" + timestamp + ".txt";
+        File file = getUniqueFilePath(savePath, fileName).toFile();
+
+        try (FileOutputStream fos = new FileOutputStream(file)) {
+            fos.write(text.getBytes());
+        }
+        fileCreationTimes.put(file.getAbsolutePath(), System.currentTimeMillis());
+        return file.getName();
+    }
+
     private String getContentType(Path filePath) {
         try {
             return Files.probeContentType(filePath);
         } catch (IOException e) {
-            e.printStackTrace();
             return null;
         }
     }
-    private String getFileType(String contentType) {
-        if (contentType == null) {
-            return "file";
-        }
-        switch (contentType) {
-            case "text/plain":
-                return "text";
-            case "image/jpeg":
-            case "image/png":
-            case "image/gif":
-            case "image/bmp":
-            case "image/webp":
-                return "image";
-            default:
-                return "file";
-        }
-    }
-    // 计算当前所有文件的总大小
-    private long calculateTotalFileSize() {
-        long totalSize = 0;
-        File saveDir = new File(SAVE_DIR);
-        if (saveDir.exists() && saveDir.isDirectory()) {
-            File[] files = saveDir.listFiles();
-            if (files != null) {
-                for (File file : files) {
-                    totalSize += file.length();
-                }
-            }
-        }
-        return totalSize;
-    }
 
+    private String getFileType(String contentType) {
+        if (contentType == null) return "file";
+        switch (contentType) {
+            case "text/plain": return "text";
+            case "image/jpeg": case "image/png": case "image/gif": case "image/bmp": case "image/webp": return "image";
+            default: return "file";
+        }
+    }
 }

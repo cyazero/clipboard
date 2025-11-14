@@ -47,8 +47,14 @@
             margin-right: 6px;
         }
 
+        /* 修复Toast位置 - 改为右上角 */
         #toast {
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            min-width: 300px;
         }
 
         .pre-line {
@@ -346,7 +352,8 @@
     </div>
 </div>
 
-<div id="toast" class="toast align-items-center position-fixed bottom-0 start-50 translate-x-n50 mb-4 border-0"
+<!-- 修改Toast位置为右上角 -->
+<div id="toast" class="toast align-items-center border-0"
      role="alert" aria-live="assertive" aria-atomic="true">
     <div class="d-flex bg-dark text-white rounded p-3">
         <div class="toast-body"></div>
@@ -373,9 +380,15 @@
             const toastEl = document.getElementById('toast');
             const toastBody = toastEl.querySelector('.toast-body');
             const bgClass = type === 'success' ? 'bg-success' : type === 'danger' ? 'bg-danger' : 'bg-dark';
+            
+            // 更新Toast样式
             toastEl.className = `toast show ${bgClass} text-white`;
             toastBody.textContent = message;
-            setTimeout(() => toastEl.classList.remove('show'), 3000);
+            
+            // 3秒后自动隐藏
+            setTimeout(() => {
+                toastEl.classList.remove('show');
+            }, 3000);
         }
     }
 

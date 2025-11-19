@@ -699,7 +699,7 @@
         }
     }
 
-    // 下载文件 - 统一处理所有文件类型，保持原始二进制数据
+    // 下载文件 - 修正编码问题
     async function downloadFile(fileName) {
         const key = getAesKey();
         if (!key) {
@@ -708,20 +708,33 @@
         }
 
         try {
-            const response = await fetch(`/api/clipboard/files/${encodeURIComponent(fileName)}`);
-            if (!response.ok) throw new Error('下载失败');
+            // 修正：确保文件名正确编码，避免双重编码
+            const encodedFileName = encodeURIComponent(fileName);
+            const response = await fetch(`/api/clipboard/files/${encodedFileName}`);
+            
+            if (!response.ok) {
+                if (response.status === 404) {
+                    throw new Error('文件不存在');
+                }
+                throw new Error(`下载失败: ${response.status}`);
+            }
 
             const encryptedData = await response.arrayBuffer();
 
             // 解密内容，保持原始二进制数据
             const decrypted = await decryptChunk(new Uint8Array(encryptedData), key);
 
-            // 创建下载链接，使用application/octet-stream类型，保持原始二进制
+            // 获取原始文件名（解码）
+            const actualFileName = decodeURIComponent(fileName);
+            
+            // 创建下载链接
             const blob = new Blob([decrypted], { type: 'application/octet-stream' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = fileName;
+            a.download = actualFileName; // 使用解码后的文件名
+            a.style.display = 'none';
+            
             document.body.appendChild(a);
             a.click();
 
@@ -733,6 +746,7 @@
 
             Toast.show('文件下载成功', 'success');
         } catch (error) {
+            console.error('下载错误:', error);
             Toast.show(`下载失败: ${error.message}`, 'danger');
         }
     }
@@ -909,31 +923,33 @@
             `;
 
         try {
-            if (type === 'text') {
-                const response = await fetch(`/api/clipboard/files/${encodedFileName}`);
-                if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
-                const encryptedData = await response.arrayBuffer();
+            // 修正：直接使用encodedFileName，不需要再次编码
+            const response = await fetch(`/api/clipboard/files/${encodedFileName}`);
+            if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
+            
+            const encryptedData = await response.arrayBuffer();
 
-                // 解密内容
-                const key = getAesKey();
-                if (!key) {
-                    container.innerHTML = `
-                            <div class="content-placeholder">
-                                <i class="bi bi-file-earmark-text"></i>
-                                需要AES密钥解密内容
-                                <div class="placeholder-controls">
-                                    <button class="placeholder-btn" onclick="downloadFile('${encodedFileName}')" title="下载原始文件">
-                                        <i class="bi bi-download"></i>
-                                    </button>
-                                    <button class="placeholder-btn" onclick="toggleVisibility('${encodedFileName}', 'text')" title="显示/隐藏内容">
-                                        <i class="bi bi-eye"></i>
-                                    </button>
-                                </div>
+            // 解密内容
+            const key = getAesKey();
+            if (!key) {
+                container.innerHTML = `
+                        <div class="content-placeholder">
+                            <i class="bi ${type === 'text' ? 'bi-file-earmark-text' : 'bi-image'}"></i>
+                            需要AES密钥解密内容
+                            <div class="placeholder-controls">
+                                <button class="placeholder-btn" onclick="downloadFile('${encodedFileName}')" title="下载原始文件">
+                                    <i class="bi bi-download"></i>
+                                </button>
+                                <button class="placeholder-btn" onclick="toggleVisibility('${encodedFileName}', '${type}')" title="显示/隐藏内容">
+                                    <i class="bi bi-eye"></i>
+                                </button>
                             </div>
-                        `;
-                    return;
-                }
+                        </div>
+                    `;
+                return;
+            }
 
+            if (type === 'text') {
                 const decrypted = await decryptChunk(new Uint8Array(encryptedData), key);
                 const decoder = new TextDecoder();
                 const content = decoder.decode(decrypted);
@@ -956,33 +972,9 @@
                         </button>
                     `;
             } else if (type === 'image') {
-                const response = await fetch(`/api/clipboard/files/${encodedFileName}`);
-                if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
-                const encryptedData = await response.arrayBuffer();
-
-                // 解密内容
-                const key = getAesKey();
-                if (!key) {
-                    container.innerHTML = `
-                            <div class="content-placeholder">
-                                <i class="bi bi-image"></i>
-                                需要AES密钥解密内容
-                                <div class="placeholder-controls">
-                                    <button class="placeholder-btn" onclick="downloadFile('${encodedFileName}')" title="下载原始文件">
-                                        <i class="bi bi-download"></i>
-                                    </button>
-                                    <button class="placeholder-btn" onclick="toggleVisibility('${encodedFileName}', 'image')" title="显示/隐藏图片">
-                                        <i class="bi bi-eye"></i>
-                                    </button>
-                                </div>
-                            </div>
-                        `;
-                    return;
-                }
-
                 const decrypted = await decryptChunk(new Uint8Array(encryptedData), key);
 
-                // 确定图片类型
+                // 获取原始文件名来确定图片类型
                 const fileName = decodeURIComponent(encodedFileName);
                 const extension = fileName.split('.').pop().toLowerCase();
                 const mimeType = `image/${extension === 'jpg' ? 'jpeg' : extension}`;
@@ -1233,5 +1225,4 @@
     });
 </script>
 </body>
-
 </html>

@@ -13,10 +13,9 @@ import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.OutputStream;
+import java.io.*;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -320,8 +319,17 @@ public class ClipboardController {
     @GetMapping("/files/{fileName}")
     public ResponseEntity<byte[]> getFile(@PathVariable String fileName) {
         try {
-            File file = new File(SAVE_DIR, fileName);
-            if (!file.exists() || !file.isFile()) return ResponseEntity.notFound().build();
+            // 对文件名进行URL解码
+            String decodedFileName = URLDecoder.decode(fileName, StandardCharsets.UTF_8.name());
+            File file = new File(SAVE_DIR, decodedFileName);
+
+            if (!file.exists() || !file.isFile()) {
+                // 如果解码后的文件不存在，尝试使用原始文件名（兼容性处理）
+                file = new File(SAVE_DIR, fileName);
+                if (!file.exists() || !file.isFile()) {
+                    return ResponseEntity.notFound().build();
+                }
+            }
 
             byte[] fileContent = Files.readAllBytes(file.toPath());
 
@@ -378,15 +386,25 @@ public class ClipboardController {
 
     @DeleteMapping("/deleteFile/{fileName}")
     public ResponseEntity<String> deleteFile(@PathVariable String fileName) {
-        File file = new File(SAVE_DIR, fileName);
-        if (file.exists() && file.isFile()) {
-            if (file.delete()) {
-                String absolutePath = file.getAbsolutePath();
-                fileCreationTimes.remove(absolutePath);
-                whitelistedFiles.remove(absolutePath);
-                return ResponseEntity.ok("文件删除成功");
+        String decodedFileName = null;
+        try {
+            decodedFileName = URLDecoder.decode(fileName, StandardCharsets.UTF_8.name());
+        } catch (UnsupportedEncodingException e) {
+            return ResponseEntity.status(500).body("文件名URL解码失败");
+        }
+        File file = new File(SAVE_DIR, decodedFileName);
+
+        if (!file.exists() || !file.isFile()) {
+            file = new File(SAVE_DIR, fileName); // 兼容性回退
+            if (file.exists() && file.isFile()) {
+                if (file.delete()) {
+                    String absolutePath = file.getAbsolutePath();
+                    fileCreationTimes.remove(absolutePath);
+                    whitelistedFiles.remove(absolutePath);
+                    return ResponseEntity.ok("文件删除成功");
+                }
+                return ResponseEntity.status(500).body("删除文件失败");
             }
-            return ResponseEntity.status(500).body("删除文件失败");
         }
         return ResponseEntity.status(404).body("文件不存在");
     }

@@ -396,15 +396,16 @@ public class ClipboardController {
 
         if (!file.exists() || !file.isFile()) {
             file = new File(SAVE_DIR, fileName); // 兼容性回退
-            if (file.exists() && file.isFile()) {
-                if (file.delete()) {
-                    String absolutePath = file.getAbsolutePath();
-                    fileCreationTimes.remove(absolutePath);
-                    whitelistedFiles.remove(absolutePath);
-                    return ResponseEntity.ok("文件删除成功");
-                }
-                return ResponseEntity.status(500).body("删除文件失败");
+        }
+
+        if (file.exists() && file.isFile()) {
+            if (file.delete()) {
+                String absolutePath = file.getAbsolutePath();
+                fileCreationTimes.remove(absolutePath);
+                whitelistedFiles.remove(absolutePath);
+                return ResponseEntity.ok("文件删除成功");
             }
+            return ResponseEntity.status(500).body("删除文件失败");
         }
         return ResponseEntity.status(404).body("文件不存在");
     }
